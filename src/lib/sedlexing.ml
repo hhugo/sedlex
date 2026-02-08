@@ -79,6 +79,8 @@ type lexbuf = {
   mutable marked_val : int;
   mutable filename : string;
   mutable finished : bool;
+  mutable __private__mem : int array;
+  mutable __private__mem_saved : int array;
 }
 
 let chunk_size = 512
@@ -109,6 +111,8 @@ let empty_lexbuf bytes_per_char =
     marked_val = 0;
     filename = "";
     finished = false;
+    __private__mem = [||];
+    __private__mem_saved = [||];
   }
 
 let dummy_uchar = Uchar.of_int 0
@@ -185,7 +189,15 @@ let refill lexbuf =
     lexbuf.marked_pos <- lexbuf.marked_pos - s;
     lexbuf.marked_bytes_pos <- lexbuf.marked_bytes_pos - s_bytes;
     lexbuf.start_pos <- 0;
-    lexbuf.start_bytes_pos <- 0
+    lexbuf.start_bytes_pos <- 0;
+    for i = 0 to Array.length lexbuf.__private__mem - 1 do
+      if lexbuf.__private__mem.(i) >= 0 then
+        lexbuf.__private__mem.(i) <- lexbuf.__private__mem.(i) - s
+    done;
+    for i = 0 to Array.length lexbuf.__private__mem_saved - 1 do
+      if lexbuf.__private__mem_saved.(i) >= 0 then
+        lexbuf.__private__mem_saved.(i) <- lexbuf.__private__mem_saved.(i) - s
+    done
   end;
   let n = lexbuf.refill lexbuf.buf lexbuf.pos chunk_size in
   if n = 0 then lexbuf.finished <- true else lexbuf.len <- lexbuf.len + n
@@ -215,7 +227,10 @@ let mark lexbuf i =
   lexbuf.marked_bol <- lexbuf.curr_bol;
   lexbuf.marked_bytes_bol <- lexbuf.curr_bytes_bol;
   lexbuf.marked_line <- lexbuf.curr_line;
-  lexbuf.marked_val <- i
+  lexbuf.marked_val <- i;
+  let n = Array.length lexbuf.__private__mem in
+  if n > 0 then
+    Array.blit lexbuf.__private__mem 0 lexbuf.__private__mem_saved 0 n
 
 let start lexbuf =
   lexbuf.start_pos <- lexbuf.pos;
@@ -231,6 +246,9 @@ let backtrack lexbuf =
   lexbuf.curr_bol <- lexbuf.marked_bol;
   lexbuf.curr_bytes_bol <- lexbuf.marked_bytes_bol;
   lexbuf.curr_line <- lexbuf.marked_line;
+  let n = Array.length lexbuf.__private__mem in
+  if n > 0 then
+    Array.blit lexbuf.__private__mem_saved 0 lexbuf.__private__mem 0 n;
   lexbuf.marked_val
 
 let rollback lexbuf =
@@ -240,6 +258,20 @@ let rollback lexbuf =
   lexbuf.curr_bytes_bol <- lexbuf.start_bytes_bol;
   lexbuf.curr_line <- lexbuf.start_line
 
+let __private__init_mem lexbuf n =
+  if Array.length lexbuf.__private__mem < n then begin
+    lexbuf.__private__mem <- Array.make n (-1);
+    lexbuf.__private__mem_saved <- Array.make n (-1)
+  end
+  else begin
+    Array.fill lexbuf.__private__mem 0 n (-1);
+    Array.fill lexbuf.__private__mem_saved 0 n (-1)
+  end
+
+let __private__set_mem lexbuf i = lexbuf.__private__mem.(i) <- lexbuf.pos
+let __private__mem_pos lexbuf i = lexbuf.__private__mem.(i) - lexbuf.start_pos
+let __private__mem_is_set lexbuf i = lexbuf.__private__mem.(i) >= 0
+let __private__num_mem_cells lexbuf = Array.length lexbuf.__private__mem
 let lexeme_start lexbuf = lexbuf.start_pos + lexbuf.offset
 let lexeme_bytes_start lexbuf = lexbuf.start_bytes_pos + lexbuf.bytes_offset
 let lexeme_end lexbuf = lexbuf.pos + lexbuf.offset
