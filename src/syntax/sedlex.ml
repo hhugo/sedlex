@@ -255,6 +255,72 @@ let compile rs =
     in
     { dfa; init_tags = []; num_tags = 0; tag_map = [||] })
   else (
+    (* Intra-rule tag coalescing: tags with identical occurrence signatures
+       (same presence in init_tags + same set of transitions) share a cell. *)
+    let tag_cell = function
+      | Set_position t | Set_value (t, _) -> t
+      | Set_prev _ -> assert false (* Set_prev not yet introduced *)
+    in
+    let init_set = Array.make num_tags_raw false in
+    List.iter (fun op -> init_set.(tag_cell op) <- true) init_tags;
+    let tag_occs = Array.make num_tags_raw [] in
+    for s = 0 to num_states - 1 do
+      let trans, _ = raw_dfa.(s) in
+      Array.iteri
+        (fun ti (_, _, tags) ->
+          List.iter
+            (fun op ->
+              let t = tag_cell op in
+              tag_occs.(t) <- (s, ti) :: tag_occs.(t))
+            tags)
+        trans
+    done;
+    Array.iteri (fun t occs -> tag_occs.(t) <- List.sort compare occs) tag_occs;
+    let sig_tbl = Hashtbl.create 31 in
+    let tag_repr = Array.init num_tags_raw Fun.id in
+    for t = 0 to num_tags_raw - 1 do
+      let sg = (init_set.(t), tag_occs.(t)) in
+      match Hashtbl.find_opt sig_tbl sg with
+        | Some repr -> tag_repr.(t) <- repr
+        | None -> Hashtbl.add sig_tbl sg t
+    done;
+    let repr_cell = Hashtbl.create 31 in
+    let num_cells = ref 0 in
+    let tag_map = Array.make num_tags_raw 0 in
+    for t = 0 to num_tags_raw - 1 do
+      let repr = tag_repr.(t) in
+      let cell =
+        match Hashtbl.find_opt repr_cell repr with
+          | Some c -> c
+          | None ->
+              let c = !num_cells in
+              incr num_cells;
+              Hashtbl.add repr_cell repr c;
+              c
+      in
+      tag_map.(t) <- cell
+    done;
+    let num_tags = !num_cells in
+    (* Remap tag_op values using tag_map *)
+    let remap_op = function
+      | Set_position t -> Set_position tag_map.(t)
+      | Set_value (cell, v) -> Set_value (tag_map.(cell), v)
+      | Set_prev _ -> assert false
+    in
+    let raw_dfa =
+      Array.map
+        (fun (trans, finals) ->
+          let trans =
+            Array.map
+              (fun (cs, target, tags) ->
+                let tags = List.sort_uniq compare (List.map remap_op tags) in
+                (cs, target, tags))
+              trans
+          in
+          (trans, finals))
+        raw_dfa
+    in
+    let init_tags = List.sort_uniq compare (List.map remap_op init_tags) in
     (* Self-loop tag delay: tags on a self-loop s→s that also appear on ALL
        entering transitions to s are removed and set as Set_prev on exit. *)
     let delayed_at = Array.make num_states [] in
@@ -307,8 +373,7 @@ let compile rs =
           { trans; finals })
         raw_dfa
     in
-    let tag_map = Array.init num_tags_raw Fun.id in
-    { dfa; init_tags = dedup_tags init_tags; num_tags = num_tags_raw; tag_map })
+    { dfa; init_tags; num_tags; tag_map })
 
 let cset_to_label cset =
   let escape_dot c =

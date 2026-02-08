@@ -866,6 +866,23 @@ let regexp_of_pattern env =
   in
   aux ~left:(Some (Start_plus 0)) ~right:(Some (End_minus 0)) ~encoding:Ascii
 
+let remap_tag_info tag_map (tags : tag_info list) : tag_info list =
+  if Array.length tag_map = 0 then tags
+  else
+    List.map
+      (fun { name; start_pos; end_pos; disc } ->
+        let remap_pos = function
+          | Tag { tag; offset } -> Tag { tag = tag_map.(tag); offset }
+          | (Start_plus _ | End_minus _) as pe -> pe
+        in
+        {
+          name;
+          start_pos = remap_pos start_pos;
+          end_pos = remap_pos end_pos;
+          disc = Option.map (fun (cell, n) -> (tag_map.(cell), n)) disc;
+        })
+      tags
+
 let handle_sedlex_match ~env ~map_rhs match_expr =
   let lexbuf =
     match match_expr with
@@ -911,6 +928,7 @@ let handle_sedlex_match ~env ~map_rhs match_expr =
   let cases =
     List.map
       (fun (_, tag_info, e) ->
+        let tag_info = remap_tag_info compiled.tag_map tag_info in
         let action = gen_binding_code (snd lexbuf) tag_info (map_rhs e) in
         ((), action))
       cases_parsed

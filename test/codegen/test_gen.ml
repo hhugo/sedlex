@@ -710,11 +710,10 @@ let%expect_test "optim: discriminator elision" =
     | _ -> ()
     |}]
 
-(* Optimization 4: Intra-rule tag coalescing
-   Tags with identical occurrence signatures should share one memory cell.
+(* Optimization 4: Intra-rule tag coalescing [DONE]
+   Tags with identical occurrence signatures share one memory cell.
    Here x_end and y_start fire on the same transitions.
-   Current: init_mem 1 (x_start=0, x_end=y_start via Tag offset, y_end=lexeme_length).
-   Goal: init_mem 1 — already optimal. *)
+   Result: init_mem 1 (x_start=0, x_end=y_start via Tag offset, y_end=lexeme_length). *)
 let%expect_test "optim: intra-rule tag coalescing" =
   (match%sedlex_test buf with
     | (Plus 'a' as x), (Plus 'b' as y) -> ignore (x, y)
@@ -796,11 +795,11 @@ let%expect_test "coalescing: or-pattern with same-position bindings" =
       state0 -> state1 [label="'a'"];
       state1 [label="1"];
       state1 -> state1 [label="'a'"];
-      state1 -> state2 [label="'b' {t0',t2'}"];
+      state1 -> state2 [label="'b' {t0'}"];
       state2 [label="2"];
       state2 -> state2 [label="'b'"];
-      state2 -> state3 [label="'c' {t1',t3'}"];
-      state2 -> state4 [label="'f' {t1',t3'}"];
+      state2 -> state3 [label="'c' {t1'}"];
+      state2 -> state4 [label="'f' {t1'}"];
       state3 [label="3\n[rule 0]", shape=doublecircle];
       state3 -> state3 [label="'c'"];
       state4 [label="4\n[rule 0]", shape=doublecircle];
@@ -814,22 +813,13 @@ let%expect_test "coalescing: or-pattern with same-position bindings" =
     and __sedlex_state_1 buf =
       match __sedlex_partition_2 (Sedlexing.__private__next_int buf) with
       | 0 -> __sedlex_state_1 buf
-      | 1 ->
-          (Sedlexing.__private__set_mem_prev buf 0;
-           Sedlexing.__private__set_mem_prev buf 2;
-           __sedlex_state_2 buf)
+      | 1 -> (Sedlexing.__private__set_mem_prev buf 0; __sedlex_state_2 buf)
       | _ -> Sedlexing.backtrack buf
     and __sedlex_state_2 buf =
       match __sedlex_partition_3 (Sedlexing.__private__next_int buf) with
       | 0 -> __sedlex_state_2 buf
-      | 1 ->
-          (Sedlexing.__private__set_mem_prev buf 1;
-           Sedlexing.__private__set_mem_prev buf 3;
-           __sedlex_state_3 buf)
-      | 2 ->
-          (Sedlexing.__private__set_mem_prev buf 1;
-           Sedlexing.__private__set_mem_prev buf 3;
-           __sedlex_state_4 buf)
+      | 1 -> (Sedlexing.__private__set_mem_prev buf 1; __sedlex_state_3 buf)
+      | 2 -> (Sedlexing.__private__set_mem_prev buf 1; __sedlex_state_4 buf)
       | _ -> Sedlexing.backtrack buf
     and __sedlex_state_3 buf =
       Sedlexing.mark buf 0;
@@ -842,28 +832,28 @@ let%expect_test "coalescing: or-pattern with same-position bindings" =
        | 0 -> __sedlex_state_4 buf
        | _ -> Sedlexing.backtrack buf) in
     match Sedlexing.start buf;
-          Sedlexing.__private__init_mem buf 5;
+          Sedlexing.__private__init_mem buf 3;
           __sedlex_state_0 buf
     with
     | 0 ->
         let x =
-          if (Sedlexing.__private__mem_value buf 4) = 0
+          if (Sedlexing.__private__mem_value buf 2) = 0
           then
             let __s = Sedlexing.__private__mem_pos buf 0 in
             let __e = Sedlexing.__private__mem_pos buf 1 in
             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
-            (let __s = Sedlexing.__private__mem_pos buf 2 in
-             let __e = Sedlexing.__private__mem_pos buf 3 in
+            (let __s = Sedlexing.__private__mem_pos buf 0 in
+             let __e = Sedlexing.__private__mem_pos buf 1 in
              { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         let y =
-          if (Sedlexing.__private__mem_value buf 4) = 0
+          if (Sedlexing.__private__mem_value buf 2) = 0
           then
             let __s = Sedlexing.__private__mem_pos buf 1 in
             let __e = Sedlexing.lexeme_length buf in
             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
-            (let __s = Sedlexing.__private__mem_pos buf 3 in
+            (let __s = Sedlexing.__private__mem_pos buf 1 in
              let __e = Sedlexing.lexeme_length buf in
              { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore (x, y)
@@ -1082,11 +1072,10 @@ let%expect_test "optim: self-loop tag delay" =
     | _ -> ()
     |}]
 
-(* Optimization 8: Tag remapping
-   After coalescing and dead-tag elimination, the PPX should remap
+(* Optimization 8: Tag remapping [DONE]
+   After coalescing and dead-tag elimination, the PPX remaps
    Tag references through the compiler's tag_map.
-   Current: 0 tags (all offsets known: x=0..1, y=1..end-1, z=end-1..end).
-   Goal: already optimal. *)
+   Result: 0 tags (all offsets known: x=0..1, y=1..end-1, z=end-1..end). *)
 let%expect_test "optim: tag remapping after coalescing" =
   (match%sedlex_test buf with
     | ('a' as x), (Plus 'b' as y), ('c' as z) -> ignore (x, y, z)
