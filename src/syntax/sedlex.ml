@@ -100,6 +100,25 @@ let bind r =
   in
   (wrapped, start_tag, end_tag)
 
+let bind_start_only r =
+  let start_tag = new_tag () in
+  let wrapped succ =
+    let inner = r succ in
+    let start_node = new_tagged_node start_tag in
+    start_node.eps <- [inner];
+    start_node
+  in
+  (wrapped, start_tag)
+
+let bind_end_only r =
+  let end_tag = new_tag () in
+  let wrapped succ =
+    let end_node = new_tagged_node end_tag in
+    end_node.eps <- [succ];
+    r end_node
+  in
+  (wrapped, end_tag)
+
 let compile_re re =
   let final = new_node () in
   (re final, final)

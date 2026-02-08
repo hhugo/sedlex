@@ -1189,87 +1189,87 @@ let%expect_test "as_bindings_num_mem_cells" =
     | "abc" -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
   [%expect {| mem_cells=0 |}];
-  (* Single binding in tuple: 2 cells (start + end tags) *)
+  (* Single binding in tuple: 0 cells (prefix + suffix known) *)
   let buf = Sedlexing.Utf8.from_string "abc" in
   (match%sedlex buf with
     | 'a', ('b' as _x), 'c' -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}];
-  (* Two bindings in tuple: 4 cells (2 tags each) *)
+  [%expect {| mem_cells=0 |}];
+  (* Two bindings in tuple: 0 cells (all offsets known) *)
   let buf = Sedlexing.Utf8.from_string "abc" in
   (match%sedlex buf with
     | ('a' as _x), ('b' as _y), 'c' ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=4 |}];
-  (* Whole-match binding: 2 cells (start + end tags) *)
+  [%expect {| mem_cells=0 |}];
+  (* Whole-match binding: 0 cells (Start_plus 0, End_minus 0) *)
   let buf = Sedlexing.Utf8.from_string "hello" in
   (match%sedlex buf with
     | Plus 'a' .. 'z' as _x -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}];
-  (* as wrapping alternation in tuple: 2 cells (start + end tags) *)
+  [%expect {| mem_cells=0 |}];
+  (* as wrapping alternation in tuple: 0 cells (prefix=1, suffix=0 known) *)
   let buf = Sedlexing.Utf8.from_string "xb" in
   (match%sedlex buf with
     | 'x', (('a' | 'b') as _x) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}];
-  (* Or-pattern: 8 cells (2 binding tags + 2 discriminator tags per branch) *)
+  [%expect {| mem_cells=0 |}];
+  (* Or-pattern with identical offsets: 0 cells (discriminator elided) *)
   let buf = Sedlexing.Utf8.from_string "123" in
   (match%sedlex buf with
     | (number as _x) | (Plus letter as _x) ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=8 |}];
-  (* Shared-prefix or-pattern: 8 cells (2 binding + 2 discriminator per branch) *)
+  [%expect {| mem_cells=0 |}];
+  (* Shared-prefix or-pattern: 4 cells (discriminator tags needed) *)
   let buf = Sedlexing.Utf8.from_string "abcdef" in
   (match%sedlex buf with
     | ("abc" as _x), "def" | "a", ("bcd" as _x), "ey" ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=8 |}]
+  [%expect {| mem_cells=4 |}]
 
 let%expect_test "as_bindings_multi_rule_mem_cells" =
   (* All rules in a match%sedlex share one pool of memory cells.
      The total is the sum of tags across ALL rules, not just the matched one. *)
 
-  (* One rule with binding in tuple, one without: 2 cells *)
+  (* One rule with binding in tuple, one without: 0 cells (offsets known) *)
   let buf = Sedlexing.Utf8.from_string "ab" in
   (match%sedlex buf with
     | 'a', ('b' as _x) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | "cd" -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}];
-  (* Even when the no-binding rule matches, cells are still allocated *)
+  [%expect {| mem_cells=0 |}];
+  (* Even when the no-binding rule matches, no cells needed (offsets known) *)
   let buf = Sedlexing.Utf8.from_string "cd" in
   (match%sedlex buf with
     | 'a', ('b' as _x) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | "cd" -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}];
-  (* Two rules, each with one binding: 4 cells (2 per rule) *)
+  [%expect {| mem_cells=0 |}];
+  (* Two rules, each with one binding: 0 cells (all offsets known) *)
   let buf = Sedlexing.Utf8.from_string "ab" in
   (match%sedlex buf with
     | 'a', ('b' as _x) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | 'c', ('d' as _y) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=4 |}];
-  (* Three rules with one binding each: 6 cells (2 per rule) *)
+  [%expect {| mem_cells=0 |}];
+  (* Three rules with one binding each: 0 cells (all offsets known) *)
   let buf = Sedlexing.Utf8.from_string "ab" in
   (match%sedlex buf with
     | 'a', ('b' as _x) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | 'c', ('d' as _y) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | 'e', ('f' as _z) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=6 |}];
-  (* Whole-match + tuple binding: 4 cells (2 per rule) *)
+  [%expect {| mem_cells=0 |}];
+  (* Whole-match + tuple binding: 0 cells (all offsets known) *)
   let buf = Sedlexing.Utf8.from_string "hello" in
   (match%sedlex buf with
     | Plus 'a' .. 'z' as _x -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | '0', (number as _y) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=4 |}];
-  (* Or-pattern rule + tuple binding rule: 10 cells (8 + 2) *)
+  [%expect {| mem_cells=0 |}];
+  (* Or-pattern (elided) + tuple binding (offsets known): 0 cells *)
   let buf = Sedlexing.Utf8.from_string "123" in
   (match%sedlex buf with
     | (number as _x) | (Plus letter as _x) ->
@@ -1277,15 +1277,15 @@ let%expect_test "as_bindings_multi_rule_mem_cells" =
     | '{', (Star (Compl '}') as _y), '}' ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=10 |}];
-  (* Two or-pattern rules: 16 cells (8 per rule) *)
+  [%expect {| mem_cells=0 |}];
+  (* Two or-pattern rules with identical offsets: 0 cells *)
   let buf = Sedlexing.Utf8.from_string "123" in
   (match%sedlex buf with
     | (number as _x) | (Plus letter as _x) ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | ('<' as _y) | ('>' as _y) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=16 |}]
+  [%expect {| mem_cells=0 |}]
 
 let%expect_test "as_bindings_nested_sedlex" =
   (* Regression: a nested match%sedlex in a case RHS must not reset the
@@ -1325,4 +1325,4 @@ let%expect_test "as_bindings_nested_sedlex" =
           | _ -> Printf.printf "other\n")
     | Plus 'a' .. 'z' as _x -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=2 |}]
+  [%expect {| mem_cells=0 |}]

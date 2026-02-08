@@ -23,6 +23,8 @@ val intersection : regexp -> regexp -> regexp option
    which matches the intersection set.  Otherwise returns [None]. *)
 
 val bind : regexp -> regexp * int * int
+val bind_start_only : regexp -> regexp * int
+val bind_end_only : regexp -> regexp * int
 val reset_tags : unit -> unit
 
 type dfa_state = {
