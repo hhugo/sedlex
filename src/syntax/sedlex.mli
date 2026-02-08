@@ -3,6 +3,7 @@
 (* Copyright 2005, 2013 by Alain Frisch and LexiFi.                       *)
 
 type regexp
+type tag_op = Set_position of int | Set_value of int * int
 
 val chars : Sedlex_cset.t -> regexp
 val seq : regexp -> regexp -> regexp
@@ -25,15 +26,17 @@ val intersection : regexp -> regexp -> regexp option
 val bind : regexp -> regexp * int * int
 val bind_start_only : regexp -> regexp * int
 val bind_end_only : regexp -> regexp * int
+val new_disc_cell : unit -> int
+val bind_disc : regexp -> int -> int -> regexp
 val reset_tags : unit -> unit
 
 type dfa_state = {
-  trans : (Sedlex_cset.t * int * int list) array;
+  trans : (Sedlex_cset.t * int * tag_op list) array;
   finals : bool array;
 }
 
 type dfa = dfa_state array
-type compiled = { dfa : dfa; init_tags : int list; num_tags : int }
+type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
 val compile : regexp array -> compiled
 val dfa_to_dot : dfa -> string

@@ -209,16 +209,23 @@ let gen_state (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
     { Sedlex.trans; finals } =
   let loc = default_loc in
   let partition = Array.map (fun (cs, _, _) -> cs) trans in
+  let gen_tag_op lexbuf op acc =
+    match op with
+      | Sedlex.Set_position t ->
+          [%expr
+            Sedlexing.__private__set_mem [%e lexbuf] [%e eint ~loc t];
+            [%e acc]]
+      | Sedlex.Set_value (cell, value) ->
+          [%expr
+            Sedlexing.__private__set_mem_value [%e lexbuf] [%e eint ~loc cell]
+              [%e eint ~loc value];
+            [%e acc]]
+  in
   let cases =
     Array.mapi
       (fun i (_, j, tags) ->
         let rhs =
-          List.fold_right
-            (fun t acc ->
-              [%expr
-                Sedlexing.__private__set_mem [%e lexbuf] [%e eint ~loc t];
-                [%e acc]])
-            tags (call_state lexbuf auto j)
+          List.fold_right (gen_tag_op lexbuf) tags (call_state lexbuf auto j)
         in
         case ~lhs:(pint ~loc i) ~guard:None ~rhs)
       trans
@@ -283,13 +290,20 @@ let gen_definition ((_, lexbuf) as lexbuf_with_name)
           Sedlexing.__private__init_mem [%e lexbuf]
             [%e eint ~loc compiled.num_tags]]
       in
+      let gen_init_tag_op op acc =
+        match op with
+          | Sedlex.Set_position t ->
+              [%expr
+                Sedlexing.__private__set_mem [%e lexbuf] [%e eint ~loc t];
+                [%e acc]]
+          | Sedlex.Set_value (cell, value) ->
+              [%expr
+                Sedlexing.__private__set_mem_value [%e lexbuf]
+                  [%e eint ~loc cell] [%e eint ~loc value];
+                [%e acc]]
+      in
       let set_init_tags =
-        List.fold_right
-          (fun t acc ->
-            [%expr
-              Sedlexing.__private__set_mem [%e lexbuf] [%e eint ~loc t];
-              [%e acc]])
-          compiled.init_tags
+        List.fold_right gen_init_tag_op compiled.init_tags
           (appfun (state_fun 0) [lexbuf])
       in
       pexp_sequence ~loc
@@ -362,7 +376,12 @@ type pos_expr =
   | Start_plus of int
   | End_minus of int
 
-type tag_info = string * pos_expr * pos_expr * int option
+type tag_info = {
+  name : string;
+  start_pos : pos_expr;
+  end_pos : pos_expr;
+  disc : (int * int) option;
+}
 
 let advance pe len =
   match (pe, len) with
@@ -411,10 +430,10 @@ let gen_binding_code lexbuf (tag_info : tag_info list) action =
       let tbl = Hashtbl.create 8 in
       let order = ref [] in
       List.iter
-        (fun (name, st, et, disc) ->
+        (fun { name; start_pos; end_pos; disc } ->
           if not (Hashtbl.mem tbl name) then order := name :: !order;
           let existing = try Hashtbl.find tbl name with Not_found -> [] in
-          Hashtbl.replace tbl name (existing @ [(st, et, disc)]))
+          Hashtbl.replace tbl name (existing @ [(start_pos, end_pos, disc)]))
         tag_info;
       List.rev_map (fun name -> (name, Hashtbl.find tbl name)) !order
     in
@@ -429,21 +448,19 @@ let gen_binding_code lexbuf (tag_info : tag_info list) action =
               let rec gen_checks = function
                 | [(st, et, _)] -> gen_sub_lexeme lexbuf st et
                 | (st, et, disc) :: rest ->
-                    let check_tag =
+                    let cell, value =
                       match disc with
-                        | Some d -> d
-                        | None -> (
-                            match et with
-                              | Tag { tag; _ } -> tag
-                              | _ ->
-                                  failwith
-                                    "discriminator required for or-pattern \
-                                     with non-tag end position")
+                        | Some (c, v) -> (c, v)
+                        | None ->
+                            failwith
+                              "discriminator required for or-pattern with \
+                               multiple bindings"
                     in
                     [%expr
                       if
-                        Sedlexing.__private__mem_is_set [%e lexbuf]
-                          [%e eint ~loc check_tag]
+                        Sedlexing.__private__mem_value [%e lexbuf]
+                          [%e eint ~loc cell]
+                        = [%e eint ~loc value]
                       then [%e gen_sub_lexeme lexbuf st et]
                       else [%e gen_checks rest]]
                 | [] -> assert false
@@ -588,37 +605,80 @@ let regexp_of_pattern env =
                           Tag { tag = end_tag; offset = 0 },
                           wrapped ))
           in
-          (r, (name, st, et, None) :: tags)
+          (r, { name; start_pos = st; end_pos = et; disc = None } :: tags)
       | Ppat_or (p1, p2) ->
           let r1, tags1 = aux ~left ~right ~encoding p1 in
           let r2, tags2 = aux ~left ~right ~encoding p2 in
-          if tags1 <> [] || tags2 <> [] then begin
+          begin
             let names tags =
-              List.map (fun (n, _, _, _) -> n) tags
-              |> List.sort_uniq String.compare
+              List.map (fun ti -> ti.name) tags |> List.sort_uniq String.compare
             in
             if names tags1 <> names tags2 then
               err p.ppat_loc
-                "both sides of '|' must bind the same names with 'as'";
-            if tags1 = tags2 then
-              (* Both branches produce identical bindings, no discriminator *)
-              (Sedlex.alt r1 r2, tags1)
+                "both sides of '|' must bind the same names with 'as'"
+          end;
+          (* Check if any entries need a new discriminator *)
+          let needs_disc =
+            (* Both branches produce identical bindings, no discriminator *)
+            tags1 <> tags2
+            &&
+            (* All tags already have a discriminator that is more specific *)
+            (List.exists (fun ti -> ti.disc = None) tags1
+            || List.exists (fun ti -> ti.disc = None) tags2)
+          in
+          let r, tags =
+            if not needs_disc then (Sedlex.alt r1 r2, tags1 @ tags2)
             else begin
-              let r1w, _, disc1_et = Sedlex.bind r1 in
-              let r2w, _, disc2_et = Sedlex.bind r2 in
-              let add_disc disc tags =
+              let max_disc_val tags =
+                List.fold_left
+                  (fun acc ti ->
+                    match ti.disc with Some (_, v) -> max acc v | None -> acc)
+                  (-1) tags
+              in
+              let stamp disc_cell value tags =
                 List.map
-                  (fun (name, st, et, existing_disc) ->
-                    match existing_disc with
-                      | Some _ -> (name, st, et, existing_disc)
-                      | None -> (name, st, et, Some disc))
+                  (fun ti ->
+                    match ti.disc with
+                      | Some _ -> ti
+                      | None -> { ti with disc = Some (disc_cell, value) })
                   tags
               in
-              ( Sedlex.alt r1w r2w,
-                add_disc disc1_et tags1 @ add_disc disc2_et tags2 )
+              (* Try to reuse an existing disc cell. *)
+              let find_shared_cell tags =
+                match tags with
+                  | [] -> None
+                  | { disc = None; _ } :: _ -> None
+                  | { disc = Some (c, _); _ } :: rest ->
+                      if
+                        List.for_all
+                          (function
+                            | { disc = Some (c2, _); _ } -> c2 = c | _ -> false)
+                          rest
+                      then Some c
+                      else None
+              in
+              match find_shared_cell tags1 with
+                | Some disc_cell ->
+                    (* Reuse left's disc cell, extend for right *)
+                    let new_val = max_disc_val tags1 + 1 in
+                    let r2w = Sedlex.bind_disc r2 disc_cell new_val in
+                    (Sedlex.alt r1 r2w, tags1 @ stamp disc_cell new_val tags2)
+                | _ ->
+                    (* Fresh disc cell for both sides *)
+                    let disc_cell = Sedlex.new_disc_cell () in
+                    let r1w = Sedlex.bind_disc r1 disc_cell 0 in
+                    let r2w = Sedlex.bind_disc r2 disc_cell 1 in
+                    ( Sedlex.alt r1w r2w,
+                      stamp disc_cell 0 tags1 @ stamp disc_cell 1 tags2 )
             end
-          end
-          else (Sedlex.alt r1 r2, tags1 @ tags2)
+          in
+          let dedup tags =
+            List.fold_left
+              (fun acc ti -> if List.mem ti acc then acc else ti :: acc)
+              [] tags
+            |> List.rev
+          in
+          (r, dedup tags)
       | Ppat_tuple (p :: pl) ->
           let all = p :: pl in
           let n = List.length all in
@@ -638,7 +698,7 @@ let regexp_of_pattern env =
             match p.ppat_desc with
               | Ppat_alias _ -> (
                   match tags' with
-                    | (_, _, (Tag _ as et), _) :: _ -> Some et
+                    | { end_pos = Tag _ as et; _ } :: _ -> Some et
                     | _ -> None)
               | _ -> None
           in

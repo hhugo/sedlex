@@ -6,11 +6,13 @@ module Cset = Sedlex_cset
 
 (* NFA *)
 
+type tag_op = Set_position of int | Set_value of int * int
+
 type node = {
   id : int;
   mutable eps : node list;
   mutable trans : (Cset.t * node) list;
-  tag : int option;
+  tag : tag_op option;
 }
 
 (* Compilation regexp -> NFA *)
@@ -23,9 +25,9 @@ let new_node () =
   incr cur_id;
   { id = !cur_id; eps = []; trans = []; tag = None }
 
-let new_tagged_node tag =
+let new_tagged_node tag_op =
   incr cur_id;
-  { id = !cur_id; eps = []; trans = []; tag = Some tag }
+  { id = !cur_id; eps = []; trans = []; tag = Some tag_op }
 
 let seq r1 r2 succ = r1 (r2 succ)
 
@@ -91,10 +93,10 @@ let bind r =
   let start_tag = new_tag () in
   let end_tag = new_tag () in
   let wrapped succ =
-    let end_node = new_tagged_node end_tag in
+    let end_node = new_tagged_node (Set_position end_tag) in
     end_node.eps <- [succ];
     let inner = r end_node in
-    let start_node = new_tagged_node start_tag in
+    let start_node = new_tagged_node (Set_position start_tag) in
     start_node.eps <- [inner];
     start_node
   in
@@ -104,7 +106,7 @@ let bind_start_only r =
   let start_tag = new_tag () in
   let wrapped succ =
     let inner = r succ in
-    let start_node = new_tagged_node start_tag in
+    let start_node = new_tagged_node (Set_position start_tag) in
     start_node.eps <- [inner];
     start_node
   in
@@ -113,11 +115,21 @@ let bind_start_only r =
 let bind_end_only r =
   let end_tag = new_tag () in
   let wrapped succ =
-    let end_node = new_tagged_node end_tag in
+    let end_node = new_tagged_node (Set_position end_tag) in
     end_node.eps <- [succ];
     r end_node
   in
   (wrapped, end_tag)
+
+let new_disc_cell () = new_tag ()
+
+let bind_disc r cell value =
+  let wrapped succ =
+    let disc_node = new_tagged_node (Set_value (cell, value)) in
+    disc_node.eps <- [succ];
+    r disc_node
+  in
+  wrapped
 
 let compile_re re =
   let final = new_node () in
@@ -131,10 +143,29 @@ type state = node list
 let rec add_node (state, tags) node =
   if List.memq node state then (state, tags)
   else (
-    let tags = match node.tag with Some t -> t :: tags | None -> tags in
+    let tags = match node.tag with Some op -> op :: tags | None -> tags in
     add_nodes (node :: state, tags) node.eps)
 
 and add_nodes acc nodes = List.fold_left add_node acc nodes
+
+(* When multiple Set_value ops target the same cell (because both branches
+   of an alt are simultaneously active in a DFA state), keep only the one
+   with the lowest value — this gives first-branch-wins semantics. *)
+let dedup_tags tags =
+  let dominated = Hashtbl.create 4 in
+  List.iter
+    (function
+      | Set_value (cell, value) -> (
+          match Hashtbl.find_opt dominated cell with
+            | Some v when v <= value -> ()
+            | _ -> Hashtbl.replace dominated cell value)
+      | Set_position _ -> ())
+    tags;
+  List.filter
+    (function
+      | Set_value (cell, value) -> Hashtbl.find dominated cell = value
+      | Set_position _ -> true)
+    tags
 
 let transition (state : state) =
   (* Merge transition with the same target *)
@@ -164,7 +195,7 @@ let transition (state : state) =
     List.map
       (fun (c, ns) ->
         let state, tags = add_nodes ([], []) ns in
-        (c, state, tags))
+        (c, state, dedup_tags tags))
       t
   in
 
@@ -174,12 +205,12 @@ let transition (state : state) =
   t
 
 type dfa_state = {
-  trans : (Cset.t * int * int list) array;
+  trans : (Cset.t * int * tag_op list) array;
   finals : bool array;
 }
 
 type dfa = dfa_state array
-type compiled = { dfa : dfa; init_tags : int list; num_tags : int }
+type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
 let compile rs =
   let rs = Array.map compile_re rs in
@@ -205,7 +236,7 @@ let compile rs =
   assert (i = 0);
   {
     dfa = Array.init !counter (Hashtbl.find states_def);
-    init_tags;
+    init_tags = dedup_tags init_tags;
     num_tags = !cur_tag;
   }
 
@@ -256,11 +287,15 @@ let dfa_to_dot dfa =
       Array.iter
         (fun (cset, target, tags) ->
           let label = cset_to_label cset in
+          let tag_op_to_string = function
+            | Set_position t -> "t" ^ string_of_int t
+            | Set_value (c, v) -> "d" ^ string_of_int c ^ "=" ^ string_of_int v
+          in
           let label =
             if tags = [] then label
             else
-              label ^ " {t"
-              ^ String.concat ",t" (List.map string_of_int tags)
+              label ^ " {"
+              ^ String.concat "," (List.map tag_op_to_string tags)
               ^ "}"
           in
           bprintf buf "  state%d -> state%d [label=\"%s\"];\n" i target label)

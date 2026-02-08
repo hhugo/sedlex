@@ -1154,6 +1154,87 @@ let%expect_test "as_bindings" =
         Printf.printf "x=%s\n" (Sedlexing.Utf8.of_submatch x)
     | _ -> assert false);
   [%expect {| x=bcd |}];
+  (* Test 10b: 3-way or-pattern reuses single disc cell *)
+  let buf = Sedlexing.Utf8.from_string "abcd" in
+  (match%sedlex buf with
+    | ("ab" as x), "cd" | ("a" as x), "bce" | ("abc" as x), "df" ->
+        Printf.printf "x=%s\n" (Sedlexing.Utf8.of_submatch x)
+    | _ -> assert false);
+  [%expect {| x=ab |}];
+  let buf = Sedlexing.Utf8.from_string "abce" in
+  (match%sedlex buf with
+    | ("ab" as x), "cd" | ("a" as x), "bce" | ("abc" as x), "df" ->
+        Printf.printf "x=%s\n" (Sedlexing.Utf8.of_submatch x)
+    | _ -> assert false);
+  [%expect {| x=a |}];
+  let buf = Sedlexing.Utf8.from_string "abcdf" in
+  (match%sedlex buf with
+    | ("ab" as x), "cd" | ("a" as x), "bce" | ("abc" as x), "df" ->
+        Printf.printf "x=%s\n" (Sedlexing.Utf8.of_submatch x)
+    | _ -> assert false);
+  [%expect {| x=abc |}];
+  (* Test 10c: or-pattern with inner or + extra binding without disc *)
+  let buf = Sedlexing.Utf8.from_string "aef" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y) | ("cd" as x), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=a y=ef |}];
+  let buf = Sedlexing.Utf8.from_string "bef" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y) | ("cd" as x), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=b y=ef |}];
+  let buf = Sedlexing.Utf8.from_string "cdgh" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y) | ("cd" as x), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=cd y=gh |}];
+  (* Test 10d: nested or-patterns on both sides *)
+  let buf = Sedlexing.Utf8.from_string "aef" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y)
+    | (("c" as x) | ("d" as x)), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=a y=ef |}];
+  let buf = Sedlexing.Utf8.from_string "bef" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y)
+    | (("c" as x) | ("d" as x)), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=b y=ef |}];
+  let buf = Sedlexing.Utf8.from_string "cgh" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y)
+    | (("c" as x) | ("d" as x)), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=c y=gh |}];
+  let buf = Sedlexing.Utf8.from_string "dgh" in
+  (match%sedlex buf with
+    | (("a" as x) | ("b" as x)), ("ef" as y)
+    | (("c" as x) | ("d" as x)), ("gh" as y) ->
+        Printf.printf "x=%s y=%s\n"
+          (Sedlexing.Utf8.of_submatch x)
+          (Sedlexing.Utf8.of_submatch y)
+    | _ -> assert false);
+  [%expect {| x=d y=gh |}];
   (* Test 11: Set_prev with backtracking (Opt at end) *)
   let buf = Sedlexing.Utf8.from_string "aabba" in
   (match%sedlex buf with
@@ -1221,13 +1302,13 @@ let%expect_test "as_bindings_num_mem_cells" =
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
   [%expect {| mem_cells=0 |}];
-  (* Shared-prefix or-pattern: 4 cells (discriminator tags needed) *)
+  (* Shared-prefix or-pattern: 1 cell (single discriminator tag for first branch) *)
   let buf = Sedlexing.Utf8.from_string "abcdef" in
   (match%sedlex buf with
     | ("abc" as _x), "def" | "a", ("bcd" as _x), "ey" ->
         Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
-  [%expect {| mem_cells=4 |}]
+  [%expect {| mem_cells=1 |}]
 
 let%expect_test "as_bindings_multi_rule_mem_cells" =
   (* All rules in a match%sedlex share one pool of memory cells.
