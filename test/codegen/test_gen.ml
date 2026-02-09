@@ -163,7 +163,7 @@ let%expect_test "as binding: simple" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | _ -> ()
     |}]
@@ -204,7 +204,7 @@ let%expect_test "as binding: whole-match shortcut" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | _ -> ()
     |}]
@@ -256,11 +256,11 @@ let%expect_test "as binding: multiple bindings" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let y =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (x, y)
     | _ -> ()
     |}]
@@ -329,11 +329,11 @@ let%expect_test "as binding: or-pattern with discriminator" =
           then
             let __s = Sedlexing.__private__mem_pos buf 0 in
             let __e = Sedlexing.__private__mem_pos buf 1 in
-            Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)
+            { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
             (let __s = Sedlexing.__private__mem_pos buf 2 in
              let __e = Sedlexing.__private__mem_pos buf 3 in
-             Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)) in
+             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore x
     | _ -> ()
     |}]
@@ -407,11 +407,11 @@ let%expect_test "as binding: shared prefix or-pattern" =
           then
             let __s = Sedlexing.__private__mem_pos buf 0 in
             let __e = Sedlexing.__private__mem_pos buf 1 in
-            Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)
+            { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
             (let __s = Sedlexing.__private__mem_pos buf 2 in
              let __e = Sedlexing.__private__mem_pos buf 3 in
-             Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)) in
+             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore x
     | _ -> ()
     |}]
@@ -463,7 +463,7 @@ let%expect_test "as binding: multi-rule" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | 1 -> ()
     | _ -> ()
@@ -504,7 +504,7 @@ let%expect_test "as binding: wrapping alternation" =
         let y =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore y
     | _ -> ()
     |}]
@@ -570,7 +570,7 @@ let%expect_test "optim: element-length (Offset_from_tag)" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | _ -> ()
     |}]
@@ -645,11 +645,11 @@ let%expect_test "optim: or-pattern offset propagation" =
           then
             let __s = Sedlexing.__private__mem_pos buf 0 in
             let __e = Sedlexing.__private__mem_pos buf 1 in
-            Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)
+            { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
             (let __s = Sedlexing.__private__mem_pos buf 2 in
              let __e = Sedlexing.__private__mem_pos buf 3 in
-             Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)) in
+             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore x
     | _ -> ()
     |}]
@@ -723,11 +723,11 @@ let%expect_test "optim: discriminator elision" =
           then
             let __s = Sedlexing.__private__mem_pos buf 0 in
             let __e = Sedlexing.__private__mem_pos buf 1 in
-            Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)
+            { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
             (let __s = Sedlexing.__private__mem_pos buf 2 in
              let __e = Sedlexing.__private__mem_pos buf 3 in
-             Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)) in
+             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore x
     | _ -> ()
     |}]
@@ -789,11 +789,11 @@ let%expect_test "optim: intra-rule tag coalescing" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let y =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (x, y)
     | _ -> ()
     |}]
@@ -883,13 +883,13 @@ let%expect_test "optim: cross-rule cell sharing" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | 1 ->
         let y =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore y
     | _ -> ()
     |}]
@@ -953,7 +953,7 @@ let%expect_test "optim: dead tag elimination" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | 1 -> ()
     | _ -> ()
@@ -1008,7 +1008,7 @@ let%expect_test "optim: self-loop tag delay" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | _ -> ()
     |}]
@@ -1074,15 +1074,15 @@ let%expect_test "optim: tag remapping after coalescing" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let y =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let z =
           let __s = Sedlexing.__private__mem_pos buf 4 in
           let __e = Sedlexing.__private__mem_pos buf 5 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (x, y, z)
     | _ -> ()
     |}]
@@ -1147,11 +1147,11 @@ let%expect_test "optim: set_prev with backtracking" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let y =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (x, y)
     | _ -> ()
     |}]
@@ -1214,7 +1214,7 @@ let%expect_test "Rep fixed-length prefix enables Start_plus" =
         let x =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore x
     | _ -> ()
     |}]

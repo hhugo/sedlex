@@ -181,37 +181,37 @@ let%expect_test "realistic: multi-token lexer" =
         let ns =
           let __s = Sedlexing.__private__mem_pos buf 0 in
           let __e = Sedlexing.__private__mem_pos buf 1 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let name =
           let __s = Sedlexing.__private__mem_pos buf 2 in
           let __e = Sedlexing.__private__mem_pos buf 3 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (ns, name)
     | 1 ->
         let label =
           let __s = Sedlexing.__private__mem_pos buf 4 in
           let __e = Sedlexing.__private__mem_pos buf 5 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let value =
           let __s = Sedlexing.__private__mem_pos buf 6 in
           let __e = Sedlexing.__private__mem_pos buf 7 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (label, value)
     | 2 ->
         let hex =
           let __s = Sedlexing.__private__mem_pos buf 8 in
           let __e = Sedlexing.__private__mem_pos buf 9 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore hex
     | 3 ->
         let x =
           let __s = Sedlexing.__private__mem_pos buf 10 in
           let __e = Sedlexing.__private__mem_pos buf 11 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         let y =
           let __s = Sedlexing.__private__mem_pos buf 12 in
           let __e = Sedlexing.__private__mem_pos buf 13 in
-          Sedlexing.Utf8.sub_lexeme buf __s (__e - __s) in
+          { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) } in
         ignore (x, y)
     | 4 ->
         let tok =
@@ -219,11 +219,11 @@ let%expect_test "realistic: multi-token lexer" =
           then
             let __s = Sedlexing.__private__mem_pos buf 14 in
             let __e = Sedlexing.__private__mem_pos buf 15 in
-            Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)
+            { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }
           else
             (let __s = Sedlexing.__private__mem_pos buf 16 in
              let __e = Sedlexing.__private__mem_pos buf 17 in
-             Sedlexing.Utf8.sub_lexeme buf __s (__e - __s)) in
+             { Sedlexing.lexbuf = buf; pos = __s; len = (__e - __s) }) in
         ignore tok
     | _ -> ()
     |}]

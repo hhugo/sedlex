@@ -288,6 +288,10 @@ let lexeme_bytes_length lexbuf = lexbuf.bytes_pos - lexbuf.start_bytes_pos
 let sub_lexeme lexbuf pos len =
   Array.sub lexbuf.buf (lexbuf.start_pos + pos) len
 
+type submatch = { lexbuf : lexbuf; pos : int; len : int }
+
+let lexeme_of_submatch s = sub_lexeme s.lexbuf s.pos s.len
+
 let lexeme lexbuf =
   Array.sub lexbuf.buf lexbuf.start_pos (lexbuf.pos - lexbuf.start_pos)
 
@@ -455,6 +459,7 @@ module Latin1 = struct
     Bytes.to_string s
 
   let lexeme lexbuf = sub_lexeme lexbuf 0 (lexbuf.pos - lexbuf.start_pos)
+  let of_submatch s = sub_lexeme s.lexbuf s.pos s.len
 end
 
 module Utf8 = struct
@@ -590,6 +595,7 @@ module Utf8 = struct
     Buffer.contents buf
 
   let lexeme lexbuf = sub_lexeme lexbuf 0 (lexbuf.pos - lexbuf.start_pos)
+  let of_submatch s = sub_lexeme s.lexbuf s.pos s.len
 end
 
 module Utf16 = struct
@@ -688,4 +694,5 @@ module Utf16 = struct
     Buffer.contents buf
 
   let lexeme lb bo bom = sub_lexeme lb 0 (lb.pos - lb.start_pos) bo bom
+  let of_submatch s bo bom = sub_lexeme s.lexbuf s.pos s.len bo bom
 end

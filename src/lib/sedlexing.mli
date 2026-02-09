@@ -166,6 +166,16 @@ val lexeme_char : lexbuf -> int -> Uchar.t
     matched by the regular expression as an array of Unicode code point. *)
 val sub_lexeme : lexbuf -> int -> int -> Uchar.t array
 
+(** A submatch captures a sub-pattern matched by an [as] binding. It carries the
+    lexbuf and the position/length of the submatch (in code points, relative to
+    the start of the current token). Use the extraction functions below to
+    obtain the matched content in the desired encoding. *)
+type submatch = { lexbuf : lexbuf; pos : int; len : int }
+
+(** [Sedlexing.lexeme_of_submatch s] returns the submatch as an array of Unicode
+    code points. *)
+val lexeme_of_submatch : submatch -> Uchar.t array
+
 (** [Sedlexing.rollback lexbuf] puts [lexbuf] back in its configuration before
     the last lexeme was matched. It is then possible to use another lexer to
     parse the same characters again. The other functions above in this section
@@ -253,6 +263,9 @@ module Latin1 : sig
       throws an exception [InvalidCodepoint] if it is not possible to encode the
       result in Latin1. *)
   val lexeme_char : lexbuf -> int -> char
+
+  (** [of_submatch s] extracts the submatch as a Latin1 encoded string. *)
+  val of_submatch : submatch -> string
 end
 
 module Utf8 : sig
@@ -270,6 +283,9 @@ module Utf8 : sig
 
   (** As [Sedlexing.sub_lexeme] with a result encoded in UTF-8. *)
   val sub_lexeme : lexbuf -> int -> int -> string
+
+  (** [of_submatch s] extracts the submatch as a UTF-8 encoded string. *)
+  val of_submatch : submatch -> string
 
   module Helper : sig
     val width : char -> int
@@ -304,4 +320,8 @@ module Utf16 : sig
       encoded in UTF-16 with byte order [bo] and starting with a BOM if
       [bom=true] *)
   val sub_lexeme : lexbuf -> int -> int -> byte_order -> bool -> string
+
+  (** [of_submatch s bo bom] extracts the submatch as a UTF-16 encoded string
+      with byte order [bo] and starting with a BOM if [bom=true]. *)
+  val of_submatch : submatch -> byte_order -> bool -> string
 end

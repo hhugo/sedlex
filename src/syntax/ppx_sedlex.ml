@@ -364,7 +364,7 @@ let gen_sub_lexeme lexbuf st et =
   [%expr
     let __s = Sedlexing.__private__mem_pos [%e lexbuf] [%e eint ~loc st] in
     let __e = Sedlexing.__private__mem_pos [%e lexbuf] [%e eint ~loc et] in
-    Sedlexing.Utf8.sub_lexeme [%e lexbuf] __s (__e - __s)]
+    { Sedlexing.lexbuf = [%e lexbuf]; pos = __s; len = __e - __s }]
 
 let gen_binding_code lexbuf (tag_info : tag_info list) action =
   let loc = default_loc in
