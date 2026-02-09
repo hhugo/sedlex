@@ -1266,3 +1266,41 @@ let%expect_test "as_bindings_multi_rule_mem_cells" =
     | ('<' as _y) | ('>' as _y) -> Printf.printf "mem_cells=%d\n" (num_mem buf)
     | _ -> assert false);
   [%expect {| mem_cells=16 |}]
+
+let%expect_test "as_bindings_nested_sedlex" =
+  (* Regression: a nested match%sedlex in a case RHS must not reset the
+     outer match's tag counter, which would cause init_mem/set_mem to be
+     dropped and as-bindings to read uninitialized memory cells. *)
+  let buf = Sedlexing.Utf8.from_string "abc" in
+  (match%sedlex buf with
+    | 'a', ('b' as x), 'c' -> Printf.printf "x=%s\n" x
+    | Star any -> (
+        (* Nested match%sedlex in a case RHS *)
+        Sedlexing.rollback buf;
+        match%sedlex buf with
+          | Plus 'a' .. 'z' -> Printf.printf "word\n"
+          | _ -> Printf.printf "other\n")
+    | _ -> assert false);
+  [%expect {| x=b |}];
+  (* Same but the nested match comes in a case BEFORE the as-binding rule *)
+  let buf = Sedlexing.Utf8.from_string "abc" in
+  (match%sedlex buf with
+    | '0' .. '9' -> (
+        Sedlexing.rollback buf;
+        match%sedlex buf with
+          | '0' .. '9' -> Printf.printf "digit\n"
+          | _ -> Printf.printf "other\n")
+    | Plus 'a' .. 'z' as x -> Printf.printf "x=%s\n" x
+    | _ -> assert false);
+  [%expect {| x=abc |}];
+  (* Verify the outer match still allocates memory cells *)
+  let buf = Sedlexing.Utf8.from_string "abc" in
+  (match%sedlex buf with
+    | '0' .. '9' -> (
+        Sedlexing.rollback buf;
+        match%sedlex buf with
+          | '0' .. '9' -> Printf.printf "digit\n"
+          | _ -> Printf.printf "other\n")
+    | Plus 'a' .. 'z' as _x -> Printf.printf "mem_cells=%d\n" (num_mem buf)
+    | _ -> assert false);
+  [%expect {| mem_cells=2 |}]

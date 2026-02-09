@@ -619,20 +619,28 @@ let handle_sedlex_match ~env ~map_rhs match_expr =
   in
   let cases = List.rev (List.tl cases) in
   Sedlex.reset_tags ();
-  let cases =
+  let cases_parsed =
     List.map
       (function
         | { pc_lhs = p; pc_rhs = e; pc_guard = None } ->
             let regexp, tag_info = regexp_of_pattern env p in
-            let action = map_rhs e in
-            let action = gen_binding_code (snd lexbuf) tag_info action in
-            (regexp, action)
+            (regexp, tag_info, e)
         | { pc_guard = Some e } ->
             err e.pexp_loc "'when' guards are not supported")
       cases
   in
-  let brs = Array.of_list cases in
-  let compiled = Sedlex.compile (Array.map fst brs) in
+  let compiled =
+    Sedlex.compile (Array.of_list (List.map (fun (r, _, _) -> r) cases_parsed))
+  in
+  (* map_rhs is called after compile so that nested match%sedlex blocks
+     (which call reset_tags) cannot corrupt the outer tag counter. *)
+  let cases =
+    List.map
+      (fun (_, tag_info, e) ->
+        let action = gen_binding_code (snd lexbuf) tag_info (map_rhs e) in
+        ((), action))
+      cases_parsed
+  in
   (gen_definition lexbuf compiled cases error, compiled.dfa)
 
 let previous = ref []
