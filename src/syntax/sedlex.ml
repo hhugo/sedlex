@@ -6,7 +6,7 @@ module Cset = Sedlex_cset
 
 (* NFA *)
 
-type tag_op = Set_position of int | Set_value of int * int
+type tag_op = Set_position of int | Set_value of int * int | Set_prev of int
 
 type node = {
   id : int;
@@ -159,12 +159,12 @@ let dedup_tags tags =
           match Hashtbl.find_opt dominated cell with
             | Some v when v <= value -> ()
             | _ -> Hashtbl.replace dominated cell value)
-      | Set_position _ -> ())
+      | Set_position _ | Set_prev _ -> ())
     tags;
   List.filter
     (function
       | Set_value (cell, value) -> Hashtbl.find dominated cell = value
-      | Set_position _ -> true)
+      | Set_position _ | Set_prev _ -> true)
     tags
 
 let transition (state : state) =
@@ -212,6 +212,62 @@ type dfa_state = {
 type dfa = dfa_state array
 type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
+let delay_tags (dfa : dfa) (init_tags : tag_op list) : dfa * tag_op list =
+  let num_states = Array.length dfa in
+  (* Step 1: compute pushable[s] = Set_position tags on ALL incoming transitions *)
+  let pushable = Array.make num_states [] in
+  for s = 0 to num_states - 1 do
+    let incoming = ref [] in
+    if s = 0 then incoming := [init_tags];
+    for s' = 0 to num_states - 1 do
+      Array.iter
+        (fun (_, target, tags) ->
+          if target = s then incoming := tags :: !incoming)
+        dfa.(s').trans
+    done;
+    match !incoming with
+      | [] -> ()
+      | first :: rest ->
+          pushable.(s) <-
+            List.filter
+              (fun op ->
+                match op with
+                  | Set_position _ -> List.for_all (List.mem op) rest
+                  | _ -> false)
+              first
+  done;
+  (* Step 2: build new DFA *)
+  let new_dfa =
+    Array.mapi
+      (fun s { trans; finals } ->
+        let new_trans =
+          Array.map
+            (fun (cs, target, tags) ->
+              let remaining =
+                List.filter (fun op -> not (List.mem op pushable.(target))) tags
+              in
+              let added =
+                if target = s then []
+                else
+                  List.filter_map
+                    (fun op ->
+                      match op with
+                        | Set_position t when not (List.mem op remaining) ->
+                            Some (Set_prev t)
+                        | _ -> None)
+                    pushable.(s)
+              in
+              (cs, target, remaining @ added))
+            trans
+        in
+        { trans = new_trans; finals })
+      dfa
+  in
+  let new_init_tags =
+    List.filter (fun op -> not (List.mem op pushable.(0))) init_tags
+  in
+  (new_dfa, new_init_tags)
+
 let compile rs =
   let rs = Array.map compile_re rs in
   let counter = ref 0 in
@@ -234,11 +290,12 @@ let compile rs =
   let init_state, init_tags = !init in
   let i = aux init_state in
   assert (i = 0);
-  {
-    dfa = Array.init !counter (Hashtbl.find states_def);
-    init_tags = dedup_tags init_tags;
-    num_tags = !cur_tag;
-  }
+  let raw_dfa = Array.init !counter (Hashtbl.find states_def) in
+  let init_tags = dedup_tags init_tags in
+  if !cur_tag = 0 then { dfa = raw_dfa; init_tags; num_tags = 0 }
+  else (
+    let dfa, init_tags = delay_tags raw_dfa init_tags in
+    { dfa; init_tags; num_tags = !cur_tag })
 
 let cset_to_label cset =
   let escape_dot c =
@@ -290,6 +347,7 @@ let dfa_to_dot dfa =
           let tag_op_to_string = function
             | Set_position t -> "t" ^ string_of_int t
             | Set_value (c, v) -> "d" ^ string_of_int c ^ "=" ^ string_of_int v
+            | Set_prev t -> "t" ^ string_of_int t ^ "←prev"
           in
           let label =
             if tags = [] then label

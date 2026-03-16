@@ -213,6 +213,7 @@ val __private__next_int : lexbuf -> int
 
 val __private__init_mem : lexbuf -> int -> unit
 val __private__set_mem_pos : lexbuf -> int -> unit
+val __private__set_mem_prev : lexbuf -> int -> unit
 val __private__set_mem_value : lexbuf -> int -> int -> unit
 val __private__mem_pos : lexbuf -> int -> int
 val __private__mem_value : lexbuf -> int -> int
