@@ -100,9 +100,9 @@ type dfa_state = {
   trans : (Cset.t * int * tag_op list) array;
       (** Each transition: (character set, target state, tag operations to
           execute when this transition fires). The operations form a parallel
-          move: every [Copy] reads its source as it was {b before} any
-          operation of the same list executed, and no two operations write the
-          same cell. *)
+          move: every [Copy] reads its source as it was {b before} any operation
+          of the same list executed, and no two operations write the same cell.
+      *)
   finals : bool array;
       (** [finals.(i)] is [true] if this state is accepting for rule [i]. *)
   final_ops : tag_op list;

@@ -172,7 +172,8 @@ let%expect_test "as binding: simple, no static elimination" =
   (match%sedlex_test buf with
     | Plus 'a', (Plus 'b' as x), Plus 'c' -> ignore x
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -318,7 +319,8 @@ let%expect_test "as binding: multiple bindings, no static elimination" =
   (match%sedlex_test buf with
     | (Plus 'a' as x), '-', (Plus 'b' as y) -> ignore (x, y)
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -377,12 +379,13 @@ let%expect_test "as binding: multiple bindings, no static elimination" =
    cannot be derived statically: each branch allocates a real position
    tag for x, and the branches get distinct discriminator values so
    extraction can pick the right tag at runtime. *)
-let%expect_test "as binding: or-pattern with discriminator, no static \
-                 elimination" =
+let%expect_test
+    "as binding: or-pattern with discriminator, no static elimination" =
   (match%sedlex_test buf with
-    | (Plus 'a', (Plus 'b' as x)) | ((Plus 'b' as x), Plus 'a') -> ignore x
+    | Plus 'a', (Plus 'b' as x) | (Plus 'b' as x), Plus 'a' -> ignore x
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -657,7 +660,8 @@ let%expect_test "as binding: multi-rule, no static elimination" =
     | Plus 'a', (Plus 'b' as x) -> ignore x
     | "cd" -> ()
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -757,7 +761,8 @@ let%expect_test "as binding: wrapping alternation, no static elimination" =
   (match%sedlex_test buf with
     | 'x', (("ab" | "c") as y), Plus 'z' -> ignore y
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -1219,7 +1224,8 @@ let%expect_test "conflicted tag: star before overlapping capture" =
   (match%sedlex_test buf with
     | Star 'a', (('a', Plus 'b') as x) -> ignore x
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;
@@ -1511,7 +1517,8 @@ let%expect_test "Rep variable-length prefix forces a tag" =
   (match%sedlex_test buf with
     | Rep ('0' .. '9', 2 .. 3), (Plus 'a' .. 'z' as x) -> ignore x
     | _ -> ());
-  [%expect {|
+  [%expect
+    {|
     DOT:
     digraph {
       rankdir=LR;

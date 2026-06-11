@@ -238,8 +238,7 @@ let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
   let dests =
     List.map
       (fun (op : Sedlex.tag_op) ->
-        match op with
-          | Copy (d, _) | Set_position d | Set_value (d, _) -> d)
+        match op with Copy (d, _) | Set_position d | Set_value (d, _) -> d)
       ops
   in
   let clobbered =

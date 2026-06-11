@@ -86,10 +86,7 @@ module Cset = Cset
 
 (* NFA *)
 
-type tag_op =
-  | Set_position of int
-  | Set_value of int * int
-  | Copy of int * int
+type tag_op = Set_position of int | Set_value of int * int | Copy of int * int
 
 type node = {
   id : int;  (** Unique identifier, used for sorting transitions by target. *)
@@ -244,7 +241,6 @@ type addr = Old of int | New of int
 (* What a [New] register will hold once the transition executes: the
    current position, or a discriminator value. *)
 type write = Wpos | Wval of int
-
 type config = node * addr IntMap.t
 (* One active NFA path: the node it reached and, for each logical tag
    written along the path, the register holding the recorded value.
@@ -280,8 +276,7 @@ let closure (seeds : config list) =
       let m =
         match n.tag with
           | None -> m
-          | Some (Set_position t) ->
-              IntMap.add t (New (new_id (`Pos t) Wpos)) m
+          | Some (Set_position t) -> IntMap.add t (New (new_id (`Pos t) Wpos)) m
           | Some (Set_value (cell, v)) ->
               IntMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
           | Some (Copy _) -> assert false (* never carried by NFA nodes *)
@@ -300,8 +295,7 @@ let closure (seeds : config list) =
 (* [split_moves moves] partitions the character transitions leaving a DFA
    state into pairwise-disjoint character sets. Each resulting piece
    carries its seed configurations in the original (priority) order. *)
-let split_moves (moves : (Cset.t * config) list) : (Cset.t * config list) list
-    =
+let split_moves (moves : (Cset.t * config) list) : (Cset.t * config list) list =
   let add pieces (c, cfg) =
     let rec ins c pieces =
       if Cset.is_empty c then pieces
@@ -415,9 +409,7 @@ let compile rs =
           ( n,
             IntMap.mapi
               (fun tag a ->
-                match a with
-                  | Old _ -> a
-                  | New i -> Old (cell_for_new tag i))
+                match a with Old _ -> a | New i -> Old (cell_for_new tag i))
               m ))
         configs
     in
@@ -525,9 +517,7 @@ let compile rs =
       | None -> []
       | Some i ->
           let _, fin = rs.(i) in
-          let _, m =
-            List.find (fun ((n, _) : config) -> n == fin) configs
-          in
+          let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
           IntMap.fold
             (fun tag a acc ->
               match a with

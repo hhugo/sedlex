@@ -69,7 +69,8 @@ type match_result = {
    order. Captures cannot occur under repetition (enforced by the Ir smart
    constructors), so repetition bodies never extend the environment and
    iterations that consume nothing can be cut without losing bindings. *)
-let parses (ir : Ir.t) (input : int array) : (int * (string * (int * int)) list) Seq.t =
+let parses (ir : Ir.t) (input : int array) :
+    (int * (string * (int * int)) list) Seq.t =
   let len = Array.length input in
   let rec go ir pos env =
     match ir with
@@ -105,7 +106,8 @@ let parses (ir : Ir.t) (input : int array) : (int * (string * (int * int)) list)
     else
       Seq.append
         (Seq.concat_map
-           (fun (p, e) -> if p = pos then Seq.empty else bounded r 0 (m - 1) p e)
+           (fun (p, e) ->
+             if p = pos then Seq.empty else bounded r 0 (m - 1) p e)
            (go r pos env))
         (Seq.return (pos, env))
   in
@@ -116,9 +118,7 @@ let parses (ir : Ir.t) (input : int array) : (int * (string * (int * int)) list)
 let best_parse ir input =
   Seq.fold_left
     (fun best (p, e) ->
-      match best with
-        | Some (bp, _) when bp >= p -> best
-        | _ -> Some (p, e))
+      match best with Some (bp, _) when bp >= p -> best | _ -> Some (p, e))
     None (parses ir input)
 
 let ref_match (rules : Ir.t array) (input : int array) : match_result option =
@@ -129,7 +129,7 @@ let ref_match (rules : Ir.t array) (input : int array) : match_result option =
         | None -> ()
         | Some (p, e) -> (
             (* Longest match wins; the lowest-numbered rule wins ties. *)
-            match !best with
+              match !best with
               | Some (_, bp, _) when bp >= p -> ()
               | _ -> best := Some (i, p, e)))
     rules;
@@ -158,7 +158,9 @@ let ref_match (rules : Ir.t array) (input : int array) : match_result option =
 
 let best_final finals =
   let n = Array.length finals in
-  let rec aux i = if i = n then None else if finals.(i) then Some i else aux (i + 1) in
+  let rec aux i =
+    if i = n then None else if finals.(i) then Some i else aux (i + 1)
+  in
   aux 0
 
 let eval_pos mem ~len (pe : Sedlex.pos_expr) =
@@ -185,7 +187,9 @@ let extract_bindings (bindings : Sedlex.compiled_binding list) mem ~len =
     (List.map
        (fun name ->
          let entries =
-           List.filter (fun (b : Sedlex.compiled_binding) -> b.name = name) bindings
+           List.filter
+             (fun (b : Sedlex.compiled_binding) -> b.name = name)
+             bindings
          in
          let rec select = function
            | [] -> assert false
@@ -208,9 +212,7 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
     let saved =
       List.filter_map
         (fun (op : Sedlex.tag_op) ->
-          match op with
-            | Copy (_, src) -> Some (src, mem.(src))
-            | _ -> None)
+          match op with Copy (_, src) -> Some (src, mem.(src)) | _ -> None)
         ops
     in
     List.iter
@@ -251,7 +253,11 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
   loop 0 0;
   Option.map
     (fun (r, p, m) ->
-      { rule = r; len = p; bindings = extract_bindings compiled.bindings.(r) m ~len:p })
+      {
+        rule = r;
+        len = p;
+        bindings = extract_bindings compiled.bindings.(r) m ~len:p;
+      })
     !marked
 
 (* ------------------------------------------------------------------ *)
@@ -270,14 +276,17 @@ let show_result input (r : match_result option) =
             (fun i (name, (s, e)) ->
               if i > 0 then Buffer.add_string buf ", ";
               match (s, e) with
-                | Some s, Some e when 0 <= s && s <= e && e <= Array.length input
-                  ->
+                | Some s, Some e
+                  when 0 <= s && s <= e && e <= Array.length input ->
                     Printf.bprintf buf "%s=%S" name
                       (String.init (e - s) (fun i ->
                            let c = input.(s + i) in
                            if c >= 32 && c < 127 then Char.chr c else '?'))
                 | s, e ->
-                    let p = function None -> "unset" | Some n -> string_of_int n in
+                    let p = function
+                      | None -> "unset"
+                      | Some n -> string_of_int n
+                    in
                     Printf.bprintf buf "%s=<%s..%s>" name (p s) (p e))
             bindings;
           Buffer.add_string buf "]");
@@ -286,8 +295,7 @@ let show_result input (r : match_result option) =
 let codes s = Array.init (String.length s) (fun i -> Char.code s.[i])
 
 let compile rules =
-  try Ok (Sedlex.compile_ir rules)
-  with exn -> Error (Printexc.to_string exn)
+  try Ok (Sedlex.compile_ir rules) with exn -> Error (Printexc.to_string exn)
 
 let oracle rules input_str =
   let input = codes input_str in
@@ -355,7 +363,9 @@ let names = [| "x"; "y"; "z"; "w" |]
    under repetition), each binding a distinct name. *)
 let gen_rule =
   G.bind (G.int_range 1 4) (fun n ->
-      G.bind (G.int_range 0 (n - 1)) (fun cap_at ->
+      G.bind
+        (G.int_range 0 (n - 1))
+        (fun cap_at ->
           let gen_elem i =
             let simple = G.bind (G.int_range 0 2) gen_simple in
             if i = cap_at then G.map (capture names.(i)) simple

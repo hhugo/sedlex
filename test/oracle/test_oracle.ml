@@ -49,7 +49,8 @@ let%expect_test "multi-rule" =
       capture "x" (plus (cls 'a' 'c'));
     |]
     "abc";
-  [%expect {|
+  [%expect
+    {|
     "dbbe" -> rule 0, len 4, [x="bb"]
     "abc" -> rule 1, len 3, [x="abc"]
     |}]
@@ -69,7 +70,8 @@ let%expect_test "backtrack restores tags" =
 let%expect_test "bounded repetition" =
   oracle [| rep (lit 'a') 2 4 ^. capture "x" (plus (lit 'b')) |] "aaabbb";
   oracle [| rep (lit 'a') 2 4 ^. capture "x" (plus (lit 'b')) |] "abbb";
-  [%expect {|
+  [%expect
+    {|
     "aaabbb" -> rule 0, len 6, [x="bbb"]
     "abbb" -> no match
     |}]
@@ -79,7 +81,8 @@ let%expect_test "complement, subtraction, intersection" =
   oracle [| lit 'd' ^. capture "x" (compl (cls 'a' 'c')) ^. lit 'd' |] "dad";
   oracle [| capture "x" (plus (sub (cls 'a' 'e') (cls 'c' 'e'))) |] "abcde";
   oracle [| capture "x" (plus (inter (cls 'a' 'd') (cls 'c' 'f'))) |] "cdabe";
-  [%expect {|
+  [%expect
+    {|
     "dxd" -> rule 0, len 3, [x="x"]
     "dad" -> no match
     "abcde" -> rule 0, len 2, [x="ab"]
@@ -90,7 +93,8 @@ let%expect_test "Rep(0,1) capture" =
   oracle [| capture "z" (opt (cls 'a' 'c')) ^. star (lit 'b') |] "b";
   oracle [| capture "z" (opt (cls 'a' 'c')) ^. star (lit 'b') |] "ab";
   oracle [| capture "z" (opt (cls 'a' 'c')) ^. star (lit 'b') |] "bb";
-  [%expect {|
+  [%expect
+    {|
     "b" -> rule 0, len 1, [z="b"]
     "ab" -> rule 0, len 2, [z="a"]
     "bb" -> rule 0, len 2, [z="b"]
@@ -104,7 +108,8 @@ let%expect_test "or-pattern with discriminator" =
   oracle [| alt (capture "x" (lit 'a')) (capture "x" (lit 'b')) |] "a";
   oracle [| alt (capture "x" (lit 'a')) (capture "x" (lit 'b')) |] "b";
   oracle [| alt (capture "x" (lit 'a')) (capture "x" (lit 'b')) |] "c";
-  [%expect {|
+  [%expect
+    {|
     "a" -> rule 0, len 1, [x="a"]
     "b" -> rule 0, len 1, [x="b"]
     "c" -> no match
@@ -120,7 +125,8 @@ let%expect_test "or-pattern with variable-length branches" =
   in
   oracle (rules ()) "aaa";
   oracle (rules ()) "bccc";
-  [%expect {|
+  [%expect
+    {|
     "aaa" -> rule 0, len 3, [x="aaa"]
     "bccc" -> rule 0, len 4, [x="bccc"]
     |}]
@@ -136,7 +142,8 @@ let%expect_test "Rep greedy disambiguation" =
   oracle [| capture "z" (rep (cls 'a' 'c') 0 2) ^. plus (lit 'a') |] "aa";
   oracle [| capture "z" (rep (cls 'a' 'c') 0 2) ^. lit 'a' |] "aa";
   oracle [| capture "z" (rep (cls 'a' 'c') 0 2) ^. lit 'a' |] "aaa";
-  [%expect {|
+  [%expect
+    {|
     "aaa" -> rule 0, len 3, [z="aa"]
     "aa" -> rule 0, len 2, [z="a"]
     "aa" -> rule 0, len 2, [z="a"]
@@ -184,9 +191,7 @@ let%expect_test "BUG: star before capture with overlapping alt" =
   [%expect {| "aba" -> rule 0, len 3, [y="ba"] |}]
 
 let%expect_test "BUG: multiple stars before single-char capture" =
-  oracle
-    [| star (lit 'a') ^. capture "y" (lit 'b') ^. star (lit 'b') |]
-    "bb";
+  oracle [| star (lit 'a') ^. capture "y" (lit 'b') ^. star (lit 'b') |] "bb";
   [%expect {| "bb" -> rule 0, len 2, [y="b"] |}]
 
 (* ================================================================== *)
@@ -198,5 +203,6 @@ let%expect_test "qcheck: single rule" =
   [%expect {| |}]
 
 let%expect_test "qcheck: two rules" =
-  qcheck ~count:1000 (G.map3 (fun a b s -> ([| a; b |], s)) gen_ir gen_ir gen_input);
+  qcheck ~count:1000
+    (G.map3 (fun a b s -> ([| a; b |], s)) gen_ir gen_ir gen_input);
   [%expect {| |}]
