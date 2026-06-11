@@ -64,6 +64,13 @@
       run just before [Sedlexing.mark], so the snapshot/backtrack machinery
       needs no changes.
 
+      A final rename pass collapses the registers of conflict-free tags —
+      tags that never hold two distinct registers in one state — into
+      their canonical cell, dropping the no-op copies this creates. Only
+      genuinely conflicted tags (e.g. a capture start reachable from a
+      preceding loop's closure, or a discriminator written by two branches
+      that stay alive together) pay for extra working registers.
+
    Possible future optimizations (see #175)
    -----------------------------------------
 
@@ -279,7 +286,12 @@ let closure (seeds : config list) =
               IntMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
           | Some (Copy _) -> assert false (* never carried by NFA nodes *)
       in
-      acc := (n, m) :: !acc;
+      (* Keep only configurations that matter: nodes with outgoing char
+         transitions, and rule-final nodes (no transitions, no epsilon
+         successors). Epsilon-only nodes contribute nothing once visited —
+         keeping them would bloat state keys and flag spurious tag
+         conflicts (e.g. the losing branch's discriminator node). *)
+      if n.trans <> [] || n.eps = [] then acc := (n, m) :: !acc;
       List.iter (fun n' -> visit (n', m)) n.eps)
   in
   List.iter visit seeds;
@@ -439,7 +451,26 @@ let compile rs =
     let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
     List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs
   in
+  (* A tag is conflicted when some DFA state holds two distinct registers
+     for it — i.e. two simultaneously-live NFA paths recorded different
+     values. Conflict-free tags can live directly in their canonical cell
+     (see the rename pass below). Checking candidates is enough: a stored
+     state has the same canonical key, hence the same sharing structure. *)
+  let conflicted = Hashtbl.create 8 in
+  let check_conflicts configs =
+    let seen = Hashtbl.create 8 in
+    List.iter
+      (fun ((_, m) : config) ->
+        IntMap.iter
+          (fun tag a ->
+            match Hashtbl.find_opt seen tag with
+              | None -> Hashtbl.add seen tag a
+              | Some a' -> if a <> a' then Hashtbl.replace conflicted tag ())
+          m)
+      configs
+  in
   let get_state candidate new_writes =
+    check_conflicts candidate;
     let key = state_key candidate in
     match Hashtbl.find_opt states key with
       | Some num ->
@@ -518,11 +549,46 @@ let compile rs =
     let final_ops = final_ops_of configs finals in
     Hashtbl.add states_def num { trans; finals; final_ops }
   done;
-  {
-    dfa = Array.init !counter (Hashtbl.find states_def);
-    init_tags;
-    num_tags = !next_cell;
-  }
+  (* Rename pass: a conflict-free tag only ever needs one register at a
+     time, so its whole pool collapses into its canonical cell — writes go
+     there directly, and the realignment / materialization copies become
+     no-op Copy(t, t) and are dropped. Register pools are per-tag, so the
+     rename cannot collide with another tag's cells. The surviving working
+     registers (conflicted tags) are compacted just above the canonical
+     cells. *)
+  let cell_map = Array.init !next_cell (fun c -> c) in
+  Hashtbl.iter
+    (fun tag pool ->
+      if not (Hashtbl.mem conflicted tag) then
+        List.iter (fun c -> cell_map.(c) <- tag) pool)
+    pools;
+  let compact = ref num_logical in
+  for c = num_logical to !next_cell - 1 do
+    if cell_map.(c) = c then (
+      cell_map.(c) <- !compact;
+      incr compact)
+  done;
+  let rewrite_ops ops =
+    List.filter_map
+      (fun op ->
+        match op with
+          | Set_position d -> Some (Set_position cell_map.(d))
+          | Set_value (d, v) -> Some (Set_value (cell_map.(d), v))
+          | Copy (d, s) ->
+              let d = cell_map.(d) and s = cell_map.(s) in
+              if d = s then None else Some (Copy (d, s)))
+      ops
+  in
+  let dfa =
+    Array.init !counter (fun i ->
+        let s = Hashtbl.find states_def i in
+        {
+          s with
+          trans = Array.map (fun (c, t, ops) -> (c, t, rewrite_ops ops)) s.trans;
+          final_ops = rewrite_ops s.final_ops;
+        })
+  in
+  { dfa; init_tags = rewrite_ops init_tags; num_tags = !compact }
 
 (* High-level compilation from IR.
 

@@ -34,14 +34,14 @@ let%expect_test "realistic: multi-token lexer" =
       state0 -> state4 [label="'('"];
       state0 -> state3 [label="'0'"];
       state0 -> state5 [label="'1'-'9'"];
-      state0 -> state2 [label="'A'-'Z' {t3}"];
-      state0 -> state1 [label="'a'-'z' {t2}"];
+      state0 -> state2 [label="'A'-'Z' {t1}"];
+      state0 -> state1 [label="'a'-'z' {t0}"];
       state1 [label="1\n[rule 4]", shape=doublecircle];
       state1 -> state6 [label="'.'"];
-      state1 -> state1 [label="'a'-'z' {t2}"];
+      state1 -> state1 [label="'a'-'z' {t0}"];
       state2 [label="2"];
       state2 -> state7 [label="'='"];
-      state2 -> state2 [label="'A'-'Z' {t3}"];
+      state2 -> state2 [label="'A'-'Z' {t1}"];
       state3 [label="3\n[rule 4]", shape=doublecircle];
       state3 -> state5 [label="'0'-'9'"];
       state3 -> state8 [label="'x'"];
@@ -57,9 +57,9 @@ let%expect_test "realistic: multi-token lexer" =
       state8 -> state12 [label="'0'-'9', 'a'-'f'"];
       state9 [label="9"];
       state9 -> state13 [label="','"];
-      state10 [label="10\n[rule 0]\n{t0<-t2}", shape=doublecircle];
+      state10 [label="10\n[rule 0]", shape=doublecircle];
       state10 -> state10 [label="'a'-'z'"];
-      state11 [label="11\n[rule 1]\n{t1<-t3}", shape=doublecircle];
+      state11 [label="11\n[rule 1]", shape=doublecircle];
       state11 -> state11 [label="'0'-'9'"];
       state12 [label="12"];
       state12 -> state12 [label="'0'-'9', 'a'-'f'"];
@@ -77,19 +77,19 @@ let%expect_test "realistic: multi-token lexer" =
       | 0 -> __sedlex_state_4 buf
       | 1 -> __sedlex_state_3 buf
       | 2 -> __sedlex_state_5 buf
-      | 3 -> (Sedlexing.__private__set_mem_pos buf 3; __sedlex_state_2 buf)
-      | 4 -> (Sedlexing.__private__set_mem_pos buf 2; __sedlex_state_1 buf)
+      | 3 -> (Sedlexing.__private__set_mem_pos buf 1; __sedlex_state_2 buf)
+      | 4 -> (Sedlexing.__private__set_mem_pos buf 0; __sedlex_state_1 buf)
       | _ -> Sedlexing.backtrack buf
     and __sedlex_state_1 buf =
       Sedlexing.mark buf 4;
       (match __sedlex_partition_2 (Sedlexing.__private__next_int buf) with
        | 0 -> __sedlex_state_6 buf
-       | 1 -> (Sedlexing.__private__set_mem_pos buf 2; __sedlex_state_1 buf)
+       | 1 -> (Sedlexing.__private__set_mem_pos buf 0; __sedlex_state_1 buf)
        | _ -> Sedlexing.backtrack buf)
     and __sedlex_state_2 buf =
       match __sedlex_partition_3 (Sedlexing.__private__next_int buf) with
       | 0 -> __sedlex_state_7 buf
-      | 1 -> (Sedlexing.__private__set_mem_pos buf 3; __sedlex_state_2 buf)
+      | 1 -> (Sedlexing.__private__set_mem_pos buf 1; __sedlex_state_2 buf)
       | _ -> Sedlexing.backtrack buf
     and __sedlex_state_3 buf =
       Sedlexing.mark buf 4;
@@ -123,13 +123,11 @@ let%expect_test "realistic: multi-token lexer" =
       | 0 -> __sedlex_state_13 buf
       | _ -> Sedlexing.backtrack buf
     and __sedlex_state_10 buf =
-      Sedlexing.__private__copy_mem buf 0 2;
       Sedlexing.mark buf 0;
       (match __sedlex_partition_5 (Sedlexing.__private__next_int buf) with
        | 0 -> __sedlex_state_10 buf
        | _ -> Sedlexing.backtrack buf)
     and __sedlex_state_11 buf =
-      Sedlexing.__private__copy_mem buf 1 3;
       Sedlexing.mark buf 1;
       (match __sedlex_partition_6 (Sedlexing.__private__next_int buf) with
        | 0 -> __sedlex_state_11 buf
@@ -148,7 +146,7 @@ let%expect_test "realistic: multi-token lexer" =
       | 0 -> 3
       | _ -> Sedlexing.backtrack buf in
     match Sedlexing.start buf;
-          Sedlexing.__private__init_mem buf 4;
+          Sedlexing.__private__init_mem buf 2;
           __sedlex_state_0 buf
     with
     | 0 ->
