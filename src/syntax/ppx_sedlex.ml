@@ -227,31 +227,64 @@ let best_final final =
 
 let state_fun state = Printf.sprintf "__sedlex_state_%i" state
 
-(* [gen_tag_ops lexbuf ops cont] wraps [cont] in a sequence of tag
-   operation calls. Each [Set_position t] becomes a call to
-   [__private__set_mem_pos], and each [Set_value (cell, v)] becomes a call to
-   [__private__set_mem_value]. Operations are folded right so they execute
-   before [cont]. *)
+(* [gen_tag_ops lexbuf ops cont] wraps [cont] in the code performing the tag
+   operations [ops], which form a parallel move: every [Copy] must read its
+   source as it was before any operation of the list executed. Sources that
+   the list also writes are first saved in let-bound locals; everything else
+   compiles to direct [__private__set_mem_pos] / [__private__set_mem_value] /
+   [__private__copy_mem] calls in list order. *)
 let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
   let loc = default_loc in
+  let dests =
+    List.map
+      (fun (op : Sedlex.tag_op) ->
+        match op with
+          | Copy (d, _) | Set_position d | Set_value (d, _) -> d)
+      ops
+  in
+  let clobbered =
+    List.sort_uniq compare
+      (List.filter_map
+         (fun (op : Sedlex.tag_op) ->
+           match op with
+             | Copy (_, s) when List.mem s dests -> Some s
+             | _ -> None)
+         ops)
+  in
+  let local s = Printf.sprintf "__sedlex_mem_%d" s in
+  let writes =
+    List.fold_right
+      (fun (op : Sedlex.tag_op) acc ->
+        match op with
+          | Set_position t ->
+              [%expr
+                Sedlexing.__private__set_mem_pos [%e lexbuf] [%e eint ~loc t];
+                [%e acc]]
+          | Set_value (cell, value) ->
+              [%expr
+                Sedlexing.__private__set_mem_value [%e lexbuf]
+                  [%e eint ~loc cell] [%e eint ~loc value];
+                [%e acc]]
+          | Copy (dst, src) when List.mem src clobbered ->
+              [%expr
+                Sedlexing.__private__mem_set [%e lexbuf] [%e eint ~loc dst]
+                  [%e evar ~loc (local src)];
+                [%e acc]]
+          | Copy (dst, src) ->
+              [%expr
+                Sedlexing.__private__copy_mem [%e lexbuf] [%e eint ~loc dst]
+                  [%e eint ~loc src];
+                [%e acc]])
+      ops cont
+  in
   List.fold_right
-    (fun (op : Sedlex.tag_op) acc ->
-      match op with
-        | Set_position t ->
-            [%expr
-              Sedlexing.__private__set_mem_pos [%e lexbuf] [%e eint ~loc t];
-              [%e acc]]
-        | Set_value (cell, value) ->
-            [%expr
-              Sedlexing.__private__set_mem_value [%e lexbuf] [%e eint ~loc cell]
-                [%e eint ~loc value];
-              [%e acc]]
-        | Copy (dst, src) ->
-            [%expr
-              Sedlexing.__private__copy_mem [%e lexbuf] [%e eint ~loc dst]
-                [%e eint ~loc src];
-              [%e acc]])
-    ops cont
+    (fun s acc ->
+      [%expr
+        let [%p pvar ~loc (local s)] =
+          Sedlexing.__private__mem_get [%e lexbuf] [%e eint ~loc s]
+        in
+        [%e acc]])
+    clobbered writes
 
 (* [call_state lexbuf auto state] generates the expression that transitions
    into DFA [state]. If the state has no outgoing transitions (a sink), it

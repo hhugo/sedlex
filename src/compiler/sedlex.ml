@@ -51,8 +51,12 @@
       registers (the canonical key numbers registers by first occurrence).
       When the lookup hits an existing state, register-move operations
       (Copy/Set) are emitted on the transition to realign registers with
-      the existing state's maps; moves are topologically sorted, breaking
-      cycles with a temporary cell.
+      the existing state's maps. The operations of one transition form a
+      parallel move: every Copy reads its source as it was before the
+      transition's writes. The code generator implements this by saving
+      clobbered sources in let-bound locals, so no move ordering or
+      temporary cells are needed (ocamllex needs both because its moves
+      are interpreted by a fixed C engine with no scratch locals).
 
       Accepting states carry [final_ops]: Copy operations that materialize
       the accepting configuration's registers into the canonical cells
@@ -316,7 +320,6 @@ type dfa = dfa_state array
 type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
 let op_dest = function Copy (d, _) | Set_position d | Set_value (d, _) -> d
-let op_orig = function Copy (_, s) -> s | Set_position _ | Set_value _ -> -1
 
 (* [compile rs] determinizes the NFA for an array of regexp rules. See the
    implementation overview at the top of this file. *)
@@ -331,24 +334,6 @@ let compile rs =
      them keeps the total cell count small. Pools of distinct tags are
      disjoint. *)
   let pools : (int, int list) Hashtbl.t = Hashtbl.create 8 in
-  (* Temporary cells used to break cycles in register moves. The pool is
-     shared between transitions, but within one move set each cycle gets a
-     distinct temp (two independent cycles must not clobber each other's
-     saved value). *)
-  let temps = ref [] in
-  let fresh_temps () =
-    let avail = ref !temps in
-    fun () ->
-      match !avail with
-        | c :: rest ->
-            avail := rest;
-            c
-        | [] ->
-            let c = !next_cell in
-            incr next_cell;
-            temps := !temps @ [c];
-            c
-  in
   let alloc_cell used tag =
     let pool =
       match Hashtbl.find_opt pools tag with Some l -> l | None -> []
@@ -363,37 +348,6 @@ let compile rs =
           Hashtbl.replace pools tag (c :: pool);
           used := c :: !used;
           c
-  in
-  (* Topological sort of register moves: a move whose source is the
-     destination of another pending move must run first; cycles are broken
-     through a temporary cell (ocamllex's sort_mvs). The result list is in
-     execution order. *)
-  let sort_mvs mvs =
-    let alloc_temp = fresh_temps () in
-    let rec go sorted mvs =
-      match mvs with
-        | [] -> sorted
-        | _ -> (
-            let dests = List.map op_dest mvs in
-            let rem, here =
-              List.partition (fun mv -> List.mem (op_orig mv) dests) mvs
-            in
-            match here with
-              | [] -> (
-                  match rem with
-                    | Copy (d, _) :: _ ->
-                        let t = alloc_temp () in
-                        Copy (t, d)
-                        :: go sorted
-                             (List.map
-                                (fun mv ->
-                                  if op_orig mv = d then Copy (op_dest mv, t)
-                                  else mv)
-                                rem)
-                    | _ -> assert false)
-              | _ -> go (here @ sorted) rem)
-    in
-    go [] mvs
   in
   (* DFA states are looked up modulo bijective register renaming: the key
      numbers each distinct address by first occurrence, so two states with
@@ -459,7 +413,9 @@ let compile rs =
   in
   (* Reaching an existing state: emit the register moves that realign the
      candidate's registers with the stored state's maps. Equal canonical
-     keys guarantee each destination cell gets a single consistent move. *)
+     keys guarantee each destination cell gets a single consistent move.
+     The result is a parallel move (Copy sources observe the pre-transition
+     state); it is sorted by destination only for output stability. *)
   let moves_to candidate new_writes existing =
     let moves = Hashtbl.create 8 in
     List.iter2
@@ -481,8 +437,7 @@ let compile rs =
           m_cand)
       candidate existing;
     let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
-    let mvs = List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs in
-    sort_mvs mvs
+    List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs
   in
   let get_state candidate new_writes =
     let key = state_key candidate in

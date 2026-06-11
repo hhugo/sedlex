@@ -203,12 +203,22 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
   let len = Array.length input in
   let mem = Array.make (max compiled.num_tags 0) (-1) in
   let apply pos ops =
+    (* Parallel-move semantics: Copy reads observe the state before any
+       write of the same operation list. *)
+    let saved =
+      List.filter_map
+        (fun (op : Sedlex.tag_op) ->
+          match op with
+            | Copy (_, src) -> Some (src, mem.(src))
+            | _ -> None)
+        ops
+    in
     List.iter
       (fun (op : Sedlex.tag_op) ->
         match op with
           | Set_position t -> mem.(t) <- pos
           | Set_value (cell, v) -> mem.(cell) <- v
-          | Copy (dst, src) -> mem.(dst) <- mem.(src))
+          | Copy (dst, src) -> mem.(dst) <- List.assoc src saved)
       ops
   in
   apply 0 compiled.init_tags;
