@@ -99,9 +99,14 @@ val reset_tags : unit -> unit
 type dfa_state = {
   trans : (Cset.t * int * tag_op list) array;
       (** Each transition: (character set, target state, tag operations to
-          execute when this transition fires). *)
+          execute when this transition fires, in list order). *)
   finals : bool array;
       (** [finals.(i)] is [true] if this state is accepting for rule [i]. *)
+  final_ops : tag_op list;
+      (** Operations materializing the accepting path's registers into the
+          canonical cells (cell index = logical tag id) read by the binding
+          extraction code. Executed when entering the state, just before
+          [Sedlexing.mark]. Empty for non-accepting states. *)
 }
 
 (** DFA states, indexed by state number. State 0 is the initial state. *)
@@ -114,8 +119,9 @@ type compiled = {
       (** Tag operations to execute before entering the DFA (from epsilon
           closure of the initial NFA nodes). *)
   num_tags : int;
-      (** Total number of memory cells needed at runtime. When [num_tags = 0],
-          no memory is allocated (pattern has no [as] bindings). *)
+      (** Total number of memory cells needed at runtime (canonical cells plus
+          working registers). When [num_tags = 0], no memory is allocated
+          (pattern has no [as] bindings). *)
 }
 
 (** [compile rules] determinizes the NFA for an array of regexp rules using

@@ -25,46 +25,47 @@
       or-patterns where multiple branches bind the same name.
 
    3. Determinization (compile)
-      Classic subset construction, extended to handle tags (Laurikari, NFAs
-      with Tagged Transitions, 2000).
+      Subset construction extended to tagged NFAs (Laurikari, "NFAs with
+      Tagged Transitions", 2000), following the structure of ocamllex's
+      implementation (lex/lexgen.ml in the OCaml distribution).
 
-      Each DFA state is a set of NFA nodes (represented as a list, identified
-      by physical identity via memq). DFA states are memoized in a hash table
-      keyed by node lists.
+      A DFA state is an ordered list of configurations: (NFA node, register
+      map). The register map records, per logical tag, which memory cell
+      holds that tag's position *along the NFA path that reached this node*.
+      Keeping one map per configuration — instead of one shared vector — is
+      what makes captures correct when a tagged epsilon node is reachable
+      from several paths at once (e.g. a Star loop whose epsilon closure
+      contains the start node of a following capture: the loop path re-fires
+      the tag write on every iteration, while the path already inside the
+      capture must keep the earlier position).
 
-      Tags live on epsilon nodes in the NFA, so they are naturally collected
-      during epsilon closure. To compute a DFA transition for character
-      set [c]: follow all NFA [c]-transitions from nodes in the current DFA
-      state, then compute the epsilon closure of the targets. Every tagged
-      node visited during closure contributes its tag operation to the
-      transition's tag list. Each (target DFA state, tag list) pair becomes
-      one DFA transition: "on input [c], execute these tag ops, go to state N."
+      Configuration order is priority: epsilon closure visits nodes
+      depth-first following the order of [eps] lists (alternation prefers
+      the left branch, repetition prefers continuing the loop), and the
+      first path to reach a node wins. This yields leftmost-greedy
+      disambiguation of capture positions among parses of the (always
+      longest) match.
 
-      In general, tagged determinization must resolve conflicts when multiple
-      active NFA paths write different values to the same tag (Laurikari uses
-      per-path tag valuations and priority ordering). Sedlex largely avoids
-      this: each [as] binding gets unique tag IDs, and [as] is rejected
-      inside repetition operators, so no two active NFA paths ever write to
-      the same position tag. The one exception is discriminator cells
-      (Set_value): both branches of an alt may be simultaneously active in
-      a DFA state; [dedup_tags] resolves this by keeping the lowest value
-      (first-branch-wins).
+      Tag writes performed by a transition allocate fresh registers; the
+      target DFA state is looked up modulo a bijective renaming of
+      registers (the canonical key numbers registers by first occurrence).
+      When the lookup hits an existing state, register-move operations
+      (Copy/Set) are emitted on the transition to realign registers with
+      the existing state's maps; moves are topologically sorted, breaking
+      cycles with a temporary cell.
+
+      Accepting states carry [final_ops]: Copy operations that materialize
+      the accepting configuration's registers into the canonical cells
+      (cell index = logical tag id) read by the generated bindings. They
+      run just before [Sedlexing.mark], so the snapshot/backtrack machinery
+      needs no changes.
 
    Possible future optimizations (see #175)
    -----------------------------------------
 
-   Tag optimizations for `as` bindings:
-   - Self-loop tag delay: tags on self-loops that also appear on all
-     entering transitions can be removed from those transitions and emitted
-     as a "set previous position" on exit. This turns O(n) tag writes in
-     loops (e.g. Star) into O(1) on exit.
-   - Intra-rule tag coalescing: tags with identical occurrence signatures
-     (same presence in init_tags and same set of transitions) can share a
-     single memory cell.
-   - Cross-rule cell sharing: memory cells from non-interfering rules can
-     share the same physical slot via liveness analysis and graph coloring.
-
-   DFA construction:
+   - Self-loop tag delay: tags rewritten on every iteration of a self-loop
+     could be maintained as a "previous position" delta and written once on
+     exit, turning O(n) writes into O(1).
    - DFA minimization: the generated DFA is not minimized. Hopcroft's or
      Moore's algorithm could reduce state count, especially for patterns with
      many character classes that converge to the same accepting state.
@@ -141,7 +142,8 @@ let rec repeat r n m succ =
   assert (0 <= n && n <= m);
   match (n, m) with
     | 0, 0 -> succ
-    | 0, m -> alt eps (fun succ -> r (repeat r 0 (m - 1) succ)) succ
+    (* Taking an iteration comes first: repetition is greedy. *)
+    | 0, m -> alt (fun succ -> r (repeat r 0 (m - 1) succ)) eps succ
     | n, m -> r (repeat r (n - 1) (m - 1) succ)
 
 let compl r =
@@ -219,129 +221,352 @@ let compile_re re =
   let final = new_node () in
   (re final, final)
 
-(* Determinization *)
+(* Determinization (tagged subset construction, see overview above) *)
 
-type state = node list
-(* A DFA state is a set of NFA nodes (subset construction).
-   Membership is checked by physical identity (List.memq) since each
-   node is created exactly once by new_node/new_tagged_node. *)
+module IntMap = Map.Make (Int)
 
-(* [add_node (state, tags) node] adds [node] to the NFA-node set [state]
-   via epsilon closure: it follows all epsilon edges recursively, collecting
-   any tag operations encountered along the way. Returns the updated
-   (state, tags) pair. Physical identity (memq) prevents revisiting nodes. *)
-let rec add_node (state, tags) node =
-  if List.memq node state then (state, tags)
-  else (
-    let tags = match node.tag with Some op -> op :: tags | None -> tags in
-    add_nodes (node :: state, tags) node.eps)
+(* During transition computation, a logical tag maps to either a concrete
+   memory cell ([Old]) or a write performed by the pending transition
+   ([New]). New ids are local to one transition. *)
+type addr = Old of int | New of int
 
-and add_nodes acc nodes = List.fold_left add_node acc nodes
+(* What a [New] register will hold once the transition executes: the
+   current position, or a discriminator value. *)
+type write = Wpos | Wval of int
 
-(* When multiple Set_value ops target the same cell (because both branches
-   of an alt are simultaneously active in a DFA state), keep only the one
-   with the lowest value — this gives first-branch-wins semantics. *)
-let dedup_tags tags =
-  let dominated = Hashtbl.create 4 in
-  List.iter
-    (function
-      | Set_value (cell, value) -> (
-          match Hashtbl.find_opt dominated cell with
-            | Some v when v <= value -> ()
-            | _ -> Hashtbl.replace dominated cell value)
-      | Set_position _ | Copy _ -> ())
-    tags;
-  List.filter
-    (function
-      | Set_value (cell, value) -> Hashtbl.find dominated cell = value
-      | Set_position _ | Copy _ -> true)
-    tags
+type config = node * addr IntMap.t
+(* One active NFA path: the node it reached and, for each logical tag
+   written along the path, the register holding the recorded value.
+   A DFA state is a [config list] in priority order; in stored states
+   all addresses are [Old]. *)
 
-(* [transition state] computes all outgoing DFA transitions from a DFA state.
-   Three phases:
-   1. Normalize: collect all NFA transitions from all nodes in [state],
-      sort by target node id, and merge char sets for identical targets.
-   2. Split: make char sets pairwise disjoint so each DFA transition fires
-      for an unambiguous set of code points.
-   3. Epsilon closure: for each disjoint char set, compute the epsilon
-      closure of the target NFA nodes, collecting tag operations. *)
-let transition (state : state) =
-  (* Merge transition with the same target *)
-  let rec norm = function
-    | (c1, n1) :: ((c2, n2) :: q as l) ->
-        if n1 == n2 then norm ((Cset.union c1 c2, n1) :: q)
-        else (c1, n1) :: norm l
-    | l -> l
+(* [closure seeds] computes the priority-ordered epsilon closure of
+   [seeds]. Nodes are visited depth-first following the order of [eps]
+   lists, and the first (highest-priority) path to reach a node fixes
+   that node's register map — this implements leftmost-greedy
+   disambiguation. Tag writes encountered along the way allocate [New]
+   registers, shared between paths recording identical content. Returns
+   the configurations and the list of (New id, write) payloads. *)
+let closure (seeds : config list) =
+  let new_ids = Hashtbl.create 8 in
+  let new_writes = ref [] in
+  let n_new = ref 0 in
+  let new_id key w =
+    match Hashtbl.find_opt new_ids key with
+      | Some i -> i
+      | None ->
+          let i = !n_new in
+          incr n_new;
+          Hashtbl.add new_ids key i;
+          new_writes := (i, w) :: !new_writes;
+          i
   in
-  let t = List.concat (List.map (fun n -> n.trans) state) in
-  let t = norm (List.sort (fun (_, n1) (_, n2) -> n1.id - n2.id) t) in
+  let visited = Hashtbl.create 16 in
+  let acc = ref [] in
+  let rec visit (n, m) =
+    if not (Hashtbl.mem visited n.id) then (
+      Hashtbl.add visited n.id ();
+      let m =
+        match n.tag with
+          | None -> m
+          | Some (Set_position t) ->
+              IntMap.add t (New (new_id (`Pos t) Wpos)) m
+          | Some (Set_value (cell, v)) ->
+              IntMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
+          | Some (Copy _) -> assert false (* never carried by NFA nodes *)
+      in
+      acc := (n, m) :: !acc;
+      List.iter (fun n' -> visit (n', m)) n.eps)
+  in
+  List.iter visit seeds;
+  (List.rev !acc, !new_writes)
 
-  (* Split char sets so as to make them disjoint *)
-  let split (all, t) (c0, n0) =
-    let t =
-      (Cset.difference c0 all, [n0])
-      :: List.map (fun (c, ns) -> (Cset.intersection c c0, n0 :: ns)) t
-      @ List.map (fun (c, ns) -> (Cset.difference c c0, ns)) t
+(* [split_moves moves] partitions the character transitions leaving a DFA
+   state into pairwise-disjoint character sets. Each resulting piece
+   carries its seed configurations in the original (priority) order. *)
+let split_moves (moves : (Cset.t * config) list) : (Cset.t * config list) list
+    =
+  let add pieces (c, cfg) =
+    let rec ins c pieces =
+      if Cset.is_empty c then pieces
+      else (
+        match pieces with
+          | [] -> [(c, [cfg])]
+          | (pc, seeds) :: rest ->
+              let inter = Cset.intersection pc c in
+              if Cset.is_empty inter then (pc, seeds) :: ins c rest
+              else (
+                let pc_only = Cset.difference pc inter in
+                let c_rest = Cset.difference c inter in
+                let with_cfg = (inter, seeds @ [cfg]) in
+                if Cset.is_empty pc_only then with_cfg :: ins c_rest rest
+                else (pc_only, seeds) :: with_cfg :: ins c_rest rest))
     in
-    (Cset.union all c0, List.filter (fun (c, _) -> not (Cset.is_empty c)) t)
+    ins c pieces
   in
-
-  let _, t = List.fold_left split (Cset.empty, []) t in
-
-  (* Epsilon closure of targets, collecting tags *)
-  let t =
-    List.map
-      (fun (c, ns) ->
-        let state, tags = add_nodes ([], []) ns in
-        (c, state, dedup_tags tags))
-      t
-  in
-
-  (* Canonical ordering *)
-  let t = Array.of_list t in
-  Array.sort (fun (c1, _, _) (c2, _, _) -> compare c1 c2) t;
-  t
+  List.fold_left add [] moves
 
 type dfa_state = {
   trans : (Cset.t * int * tag_op list) array;
   finals : bool array;
+  final_ops : tag_op list;
 }
 
 type dfa = dfa_state array
 type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
-(* [compile rs] determinizes the NFA for an array of regexp rules.
-   Each rule is compiled to an NFA (entry node, final node) pair. The initial
-   DFA state is the epsilon closure of all entry nodes. States are explored
-   via [transition] and memoized in a hash table keyed by NFA node lists
-   (physical identity). Returns a {compiled} record with the DFA, initial
-   tag operations, and total number of memory cells needed. *)
+let op_dest = function Copy (d, _) | Set_position d | Set_value (d, _) -> d
+let op_orig = function Copy (_, s) -> s | Set_position _ | Set_value _ -> -1
+
+(* [compile rs] determinizes the NFA for an array of regexp rules. See the
+   implementation overview at the top of this file. *)
 let compile rs =
   let rs = Array.map compile_re rs in
-  let counter = ref 0 in
-  let states = Hashtbl.create 31 in
-  let states_def = Hashtbl.create 31 in
-  let rec aux state =
-    try Hashtbl.find states state
-    with Not_found ->
-      let i = !counter in
-      incr counter;
-      Hashtbl.add states state i;
-      let trans = transition state in
-      let trans = Array.map (fun (p, t, tags) -> (p, aux t, tags)) trans in
-      let finals = Array.map (fun (_, f) -> List.memq f state) rs in
-      Hashtbl.add states_def i { trans; finals };
-      i
+  let num_logical = !cur_tag in
+  (* Working registers live above the canonical cells 0..num_logical-1,
+     which are written only by [final_ops] and read by the generated
+     binding-extraction code. *)
+  let next_cell = ref num_logical in
+  (* Per-logical-tag pool of working registers allocated so far; reusing
+     them keeps the total cell count small. Pools of distinct tags are
+     disjoint. *)
+  let pools : (int, int list) Hashtbl.t = Hashtbl.create 8 in
+  (* Temporary cells used to break cycles in register moves. The pool is
+     shared between transitions, but within one move set each cycle gets a
+     distinct temp (two independent cycles must not clobber each other's
+     saved value). *)
+  let temps = ref [] in
+  let fresh_temps () =
+    let avail = ref !temps in
+    fun () ->
+      match !avail with
+        | c :: rest ->
+            avail := rest;
+            c
+        | [] ->
+            let c = !next_cell in
+            incr next_cell;
+            temps := !temps @ [c];
+            c
   in
-  let init = ref ([], []) in
-  Array.iter (fun (i, _) -> init := add_node !init i) rs;
-  let init_state, init_tags = !init in
-  let i = aux init_state in
-  assert (i = 0);
+  let alloc_cell used tag =
+    let pool =
+      match Hashtbl.find_opt pools tag with Some l -> l | None -> []
+    in
+    match List.find_opt (fun c -> not (List.mem c !used)) pool with
+      | Some c ->
+          used := c :: !used;
+          c
+      | None ->
+          let c = !next_cell in
+          incr next_cell;
+          Hashtbl.replace pools tag (c :: pool);
+          used := c :: !used;
+          c
+  in
+  (* Topological sort of register moves: a move whose source is the
+     destination of another pending move must run first; cycles are broken
+     through a temporary cell (ocamllex's sort_mvs). The result list is in
+     execution order. *)
+  let sort_mvs mvs =
+    let alloc_temp = fresh_temps () in
+    let rec go sorted mvs =
+      match mvs with
+        | [] -> sorted
+        | _ -> (
+            let dests = List.map op_dest mvs in
+            let rem, here =
+              List.partition (fun mv -> List.mem (op_orig mv) dests) mvs
+            in
+            match here with
+              | [] -> (
+                  match rem with
+                    | Copy (d, _) :: _ ->
+                        let t = alloc_temp () in
+                        Copy (t, d)
+                        :: go sorted
+                             (List.map
+                                (fun mv ->
+                                  if op_orig mv = d then Copy (op_dest mv, t)
+                                  else mv)
+                                rem)
+                    | _ -> assert false)
+              | _ -> go (here @ sorted) rem)
+    in
+    go [] mvs
+  in
+  (* DFA states are looked up modulo bijective register renaming: the key
+     numbers each distinct address by first occurrence, so two states with
+     the same node order and the same register-sharing structure collide. *)
+  let state_key (configs : config list) =
+    let tbl = Hashtbl.create 8 in
+    let canon a =
+      match Hashtbl.find_opt tbl a with
+        | Some i -> i
+        | None ->
+            let i = Hashtbl.length tbl in
+            Hashtbl.add tbl a i;
+            i
+    in
+    List.map
+      (fun (n, m) ->
+        (n.id, List.map (fun (t, a) -> (t, canon a)) (IntMap.bindings m)))
+      configs
+  in
+  let states = Hashtbl.create 31 in
+  let state_configs : (int, config list) Hashtbl.t = Hashtbl.create 31 in
+  let states_def = Hashtbl.create 31 in
+  let counter = ref 0 in
+  let todo = Queue.create () in
+  (* Creating a new state: [Old] registers are kept as-is, [New] writes get
+     concrete cells; the transition only carries the Set operations. *)
+  let concretize configs new_writes =
+    let used =
+      ref
+        (List.concat_map
+           (fun ((_, m) : config) ->
+             List.filter_map
+               (fun (_, a) -> match a with Old c -> Some c | New _ -> None)
+               (IntMap.bindings m))
+           configs)
+    in
+    let assigned = Hashtbl.create 4 in
+    let ops = ref [] in
+    let cell_for_new tag i =
+      match Hashtbl.find_opt assigned i with
+        | Some c -> c
+        | None ->
+            let c = alloc_cell used tag in
+            Hashtbl.add assigned i c;
+            (match List.assoc i new_writes with
+              | Wpos -> ops := Set_position c :: !ops
+              | Wval v -> ops := Set_value (c, v) :: !ops);
+            c
+    in
+    let configs =
+      List.map
+        (fun (n, m) ->
+          ( n,
+            IntMap.mapi
+              (fun tag a ->
+                match a with
+                  | Old _ -> a
+                  | New i -> Old (cell_for_new tag i))
+              m ))
+        configs
+    in
+    (configs, !ops)
+  in
+  (* Reaching an existing state: emit the register moves that realign the
+     candidate's registers with the stored state's maps. Equal canonical
+     keys guarantee each destination cell gets a single consistent move. *)
+  let moves_to candidate new_writes existing =
+    let moves = Hashtbl.create 8 in
+    List.iter2
+      (fun ((_, m_cand) : config) ((_, m_ex) : config) ->
+        IntMap.iter
+          (fun tag a ->
+            let dst =
+              match IntMap.find tag m_ex with
+                | Old c -> c
+                | New _ -> assert false
+            in
+            match a with
+              | Old src ->
+                  if src <> dst then Hashtbl.replace moves dst (Copy (dst, src))
+              | New i -> (
+                  match List.assoc i new_writes with
+                    | Wpos -> Hashtbl.replace moves dst (Set_position dst)
+                    | Wval v -> Hashtbl.replace moves dst (Set_value (dst, v))))
+          m_cand)
+      candidate existing;
+    let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
+    let mvs = List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs in
+    sort_mvs mvs
+  in
+  let get_state candidate new_writes =
+    let key = state_key candidate in
+    match Hashtbl.find_opt states key with
+      | Some num ->
+          (num, moves_to candidate new_writes (Hashtbl.find state_configs num))
+      | None ->
+          let configs, ops = concretize candidate new_writes in
+          let num = !counter in
+          incr counter;
+          Hashtbl.add states key num;
+          Hashtbl.add state_configs num configs;
+          Queue.push num todo;
+          (num, ops)
+  in
+  let transition configs =
+    let moves =
+      List.concat_map
+        (fun ((n, m) : config) ->
+          List.map (fun (c, n') -> (c, (n', m))) n.trans)
+        configs
+    in
+    let pieces = split_moves moves in
+    let t =
+      List.map
+        (fun (cset, seeds) ->
+          let candidate, new_writes = closure seeds in
+          let num, ops = get_state candidate new_writes in
+          (cset, num, ops))
+        pieces
+    in
+    let t = Array.of_list t in
+    Array.sort (fun (c1, _, _) (c2, _, _) -> compare c1 c2) t;
+    t
+  in
+  let lowest_final finals =
+    let n = Array.length finals in
+    let rec aux i =
+      if i = n then None else if finals.(i) then Some i else aux (i + 1)
+    in
+    aux 0
+  in
+  let finals_of configs =
+    Array.map
+      (fun (_, fin) -> List.exists (fun ((n, _) : config) -> n == fin) configs)
+      rs
+  in
+  (* Materialize the accepting configuration's registers into the
+     canonical cells (cell = logical tag id) just before [mark]. Sources
+     are working registers (>= num_logical) and destinations canonical
+     cells, so the copies never interfere with each other. *)
+  let final_ops_of configs finals =
+    match lowest_final finals with
+      | None -> []
+      | Some i ->
+          let _, fin = rs.(i) in
+          let _, m =
+            List.find (fun ((n, _) : config) -> n == fin) configs
+          in
+          IntMap.fold
+            (fun tag a acc ->
+              match a with
+                | Old c -> if c = tag then acc else Copy (tag, c) :: acc
+                | New _ -> assert false)
+            m []
+  in
+  let init_candidate, init_writes =
+    closure
+      (List.map (fun (entry, _) -> (entry, IntMap.empty)) (Array.to_list rs))
+  in
+  let num0, init_tags = get_state init_candidate init_writes in
+  assert (num0 = 0);
+  while not (Queue.is_empty todo) do
+    let num = Queue.pop todo in
+    let configs = Hashtbl.find state_configs num in
+    let trans = transition configs in
+    let finals = finals_of configs in
+    let final_ops = final_ops_of configs finals in
+    Hashtbl.add states_def num { trans; finals; final_ops }
+  done;
   {
     dfa = Array.init !counter (Hashtbl.find states_def);
-    init_tags = dedup_tags init_tags;
-    num_tags = !cur_tag;
+    init_tags;
+    num_tags = !next_cell;
   }
 
 (* High-level compilation from IR.
@@ -598,8 +823,13 @@ let dfa_to_dot dfa =
   bprintf buf "  node [shape=circle];\n\n";
   bprintf buf "  _start [shape=point];\n";
   bprintf buf "  _start -> state0;\n\n";
+  let tag_op_to_string = function
+    | Set_position t -> "t" ^ string_of_int t
+    | Set_value (c, v) -> "d" ^ string_of_int c ^ "=" ^ string_of_int v
+    | Copy (dst, src) -> "t" ^ string_of_int dst ^ "<-t" ^ string_of_int src
+  in
   Array.iteri
-    (fun i { trans; finals } ->
+    (fun i { trans; finals; final_ops } ->
       let accepted =
         let acc = ref [] in
         for r = Array.length finals - 1 downto 0 do
@@ -610,18 +840,21 @@ let dfa_to_dot dfa =
       (match accepted with
         | [] -> bprintf buf "  state%d [label=\"%d\"];\n" i i
         | rules ->
+            let ops =
+              if final_ops = [] then ""
+              else
+                "\\n{"
+                ^ String.concat "," (List.map tag_op_to_string final_ops)
+                ^ "}"
+            in
             bprintf buf
-              "  state%d [label=\"%d\\n[rule %s]\", shape=doublecircle];\n" i i
-              (String.concat "," (List.map string_of_int rules)));
+              "  state%d [label=\"%d\\n[rule %s]%s\", shape=doublecircle];\n" i
+              i
+              (String.concat "," (List.map string_of_int rules))
+              ops);
       Array.iter
         (fun (cset, target, tags) ->
           let label = cset_to_label cset in
-          let tag_op_to_string = function
-            | Set_position t -> "t" ^ string_of_int t
-            | Set_value (c, v) -> "d" ^ string_of_int c ^ "=" ^ string_of_int v
-            | Copy (dst, src) ->
-                "t" ^ string_of_int dst ^ "<-t" ^ string_of_int src
-          in
           let label =
             if tags = [] then label
             else

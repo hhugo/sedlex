@@ -216,7 +216,10 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
   let rec loop state pos =
     let st = compiled.dfa.(state) in
     (match best_final st.finals with
-      | Some r -> marked := Some (r, pos, Array.copy mem)
+      | Some r ->
+          (* Materialize registers into canonical cells, then mark. *)
+          apply pos st.final_ops;
+          marked := Some (r, pos, Array.copy mem)
       | None -> ());
     if pos <= len then (
       (* At end of input the runtime feeds the EOF code point (-1). *)

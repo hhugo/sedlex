@@ -138,7 +138,7 @@ let%expect_test "Rep greedy disambiguation" =
   oracle [| capture "z" (rep (cls 'a' 'c') 0 2) ^. lit 'a' |] "aaa";
   [%expect {|
     "aaa" -> rule 0, len 3, [z="aa"]
-    ERROR "aa" -> ref=rule 0, len 2, [z="a"] dfa=rule 0, len 2, [z="aa"]
+    "aa" -> rule 0, len 2, [z="a"]
     "aa" -> rule 0, len 2, [z="a"]
     "aaa" -> rule 0, len 3, [z="aa"]
     |}]
@@ -149,12 +149,12 @@ let%expect_test "Rep with even-parity tail" =
   oracle
     [| capture "z" (rep (lit 'a') 0 2) ^. plus (lit 'a' ^. lit 'a') |]
     "aaaaa";
-  [%expect {| ERROR "aaaaa" -> ref=rule 0, len 5, [z="a"] dfa=rule 0, len 5, [z="aa"] |}]
+  [%expect {| "aaaaa" -> rule 0, len 5, [z="a"] |}]
 
 let%expect_test "star/capture ambiguity (greedy spec)" =
   (* Greedy: the star takes as much as it can, the capture gets the rest. *)
   oracle [| star (lit 'a') ^. capture "x" (plus (lit 'a')) |] "aaa";
-  [%expect {| ERROR "aaa" -> ref=rule 0, len 3, [x="a"] dfa=rule 0, len 3, [x=""] |}]
+  [%expect {| "aaa" -> rule 0, len 3, [x="a"] |}]
 
 (* ================================================================== *)
 (* BUG: loop preceding a capture (single-register-vector miscompute)   *)
@@ -165,14 +165,14 @@ let%expect_test "BUG: star before variable-length capture" =
      epsilon closure refires the capture's start tag on every star
      iteration, so the recorded start drifts to the last 'a'. *)
   oracle [| star (lit 'a') ^. capture "x" (lit 'a' ^. plus (lit 'b')) |] "aabb";
-  [%expect {| ERROR "aabb" -> ref=rule 0, len 4, [x="abb"] dfa=rule 0, len 4, [x="bb"] |}]
+  [%expect {| "aabb" -> rule 0, len 4, [x="abb"] |}]
 
 let%expect_test "BUG: capture start refires past capture entry" =
   (* The start tag refires even on characters consumed INSIDE the capture
      (the star path stays alive in the DFA state), so x can come out as a
      value Plus 'a' cannot even match. *)
   oracle [| star (lit 'a') ^. capture "x" (plus (lit 'a')) ^. lit 'b' |] "aab";
-  [%expect {| ERROR "aab" -> ref=rule 0, len 3, [x="a"] dfa=rule 0, len 3, [x=""] |}]
+  [%expect {| "aab" -> rule 0, len 3, [x="a"] |}]
 
 let%expect_test "BUG: star before capture with overlapping alt" =
   oracle
@@ -195,37 +195,8 @@ let%expect_test "BUG: multiple stars before single-char capture" =
 
 let%expect_test "qcheck: single rule" =
   qcheck (G.map2 (fun r s -> ([| r |], s)) gen_ir gen_input);
-  [%expect {|
-      rule0: ((Plus ['b'-'d'] as x), ['a'-'d'], Star ['c'-'d'])
-    ERROR "bdc" -> ref=rule 0, len 3, [x="bd"] dfa=rule 0, len 3, [x="bdc"]
-      rule0: ((Rep('b', 1..3) as x), (Plus 'b' as y))
-    ERROR "bbac" -> ref=rule 0, len 2, [x="b", y="b"] dfa=rule 0, len 2, [x="bb", y=""]
-      rule0: ((Star Star 'c' as x), Plus ['a'-'c'])
-    ERROR "ccd" -> ref=rule 0, len 2, [x="c"] dfa=rule 0, len 2, [x="cc"]
-      rule0: ((Plus ['b'-'d'] as x), 'b', Star 'c')
-    ERROR "bba" -> ref=rule 0, len 2, [x="b"] dfa=rule 0, len 2, [x="bb"]
-      rule0: (((Rep(['c'-'d'], 0..1), Plus 'a') as x), ((['a', 'd'] | ('a', 'd')) as y))
-    ERROR "aabc" -> ref=rule 0, len 2, [x="a", y="a"] dfa=rule 0, len 2, [x="aa", y=""]
-    5/2000 cases failed (printed at most 5)
-    |}]
+  [%expect {| |}]
 
 let%expect_test "qcheck: two rules" =
   qcheck ~count:1000 (G.map3 (fun a b s -> ([| a; b |], s)) gen_ir gen_ir gen_input);
-  [%expect {|
-      rule0: ((Star Plus ['a'-'c'] as x), Plus Rep(['b'-'c'], 1..3))
-      rule1: (('b' as x), 'a', ((Rep('a', 0..2), 'd') as z))
-    ERROR "c" -> ref=rule 0, len 1, [x=""] dfa=rule 0, len 1, [x="c"]
-      rule0: ('a' as x)
-      rule1: (((Star ['c'-'d'], ['a'-'c']) as x), (['a', 'd'] | Rep(['b'-'d'], 1..2)), Star ['c'-'d'], Star (['a'-'d'], 'a'))
-    ERROR "ccb" -> ref=rule 1, len 3, [x="cc"] dfa=rule 1, len 3, [x="ccb"]
-      rule0: (Star 'd', (['a'-'d'] as y), ['a'-'d'], ((Star 'a' | 'b') as w))
-      rule1: (['a'-'c'], ('a' as y))
-    ERROR "ddd" -> ref=rule 0, len 3, [w="", y="d"] dfa=rule 0, len 3, [w=<5..3>, y=<3..4>]
-      rule0: ((Star ['a'-'c'] as x), Plus ['a'-'b'], ['a'-'d'])
-      rule1: (((('d', ['a'-'d']) | (['a'-'b'], ['b'-'d'])) as x), Star 'd', ('d' as z))
-    ERROR "bd" -> ref=rule 0, len 2, [x=""] dfa=rule 0, len 2, [x="b"]
-      rule0: (((Star ['a'-'d'] | Rep(['c'-'d'], 0..2)) as x), 'a', (Plus 'b' as z))
-      rule1: ((Plus ['a'-'d'] as x), Plus ['a'-'d'], ('d' as z))
-    ERROR "ccd" -> ref=rule 1, len 3, [x="c", z="d"] dfa=rule 1, len 3, [x="ccd", z="d"]
-    6/1000 cases failed (printed at most 5)
-    |}]
+  [%expect {| |}]
