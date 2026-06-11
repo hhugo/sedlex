@@ -207,7 +207,8 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
       (fun (op : Sedlex.tag_op) ->
         match op with
           | Set_position t -> mem.(t) <- pos
-          | Set_value (cell, v) -> mem.(cell) <- v)
+          | Set_value (cell, v) -> mem.(cell) <- v
+          | Copy (dst, src) -> mem.(dst) <- mem.(src))
       ops
   in
   apply 0 compiled.init_tags;
