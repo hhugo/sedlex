@@ -477,6 +477,11 @@ let concretize regs configs new_writes =
    state); it is sorted by destination only for output stability. *)
 let moves_to candidate new_writes existing =
   let moves = Hashtbl.create 8 in
+  let set_move dst op =
+    match Hashtbl.find_opt moves dst with
+      | None -> Hashtbl.add moves dst op
+      | Some op' -> assert (op = op')
+  in
   List.iter2
     (fun ((_, m_cand) : config) ((_, m_ex) : config) ->
       IntMap.iter
@@ -485,13 +490,11 @@ let moves_to candidate new_writes existing =
             match IntMap.find tag m_ex with Old c -> c | New _ -> assert false
           in
           match a with
-            | Old src ->
-                if src <> dst then Hashtbl.replace moves dst (Copy { dst; src })
+            | Old src -> if src <> dst then set_move dst (Copy { dst; src })
             | New i -> (
                 match List.assoc i new_writes with
-                  | Wpos -> Hashtbl.replace moves dst (Set_position { dst })
-                  | Wval v ->
-                      Hashtbl.replace moves dst (Set_value { dst; value = v })))
+                  | Wpos -> set_move dst (Set_position { dst })
+                  | Wval v -> set_move dst (Set_value { dst; value = v })))
         m_cand)
     candidate existing;
   let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
@@ -554,7 +557,7 @@ let finals_of rs configs =
    canonical cells (cell = logical tag id) just before [mark]. Sources
    are working registers (>= num_logical) and destinations canonical
    cells, so the copies never interfere with each other. *)
-let final_ops_of rs configs finals =
+let final_ops_of regs rs configs finals =
   match lowest_final finals with
     | None -> []
     | Some i ->
@@ -564,7 +567,10 @@ let final_ops_of rs configs finals =
           (fun tag a acc ->
             match a with
               | Old c ->
-                  if c = tag then acc else Copy { dst = tag; src = c } :: acc
+                  if c = tag then acc
+                  else (
+                    assert (c >= regs.num_logical);
+                    Copy { dst = tag; src = c } :: acc)
               | New _ -> assert false)
           m []
 
@@ -591,16 +597,24 @@ let collapse_conflict_free regs =
   (cell_map, !compact)
 
 let rewrite_ops cell_map ops =
-  List.filter_map
-    (fun op ->
-      match op with
-        | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
-        | Set_value { dst; value } ->
-            Some (Set_value { dst = cell_map.(dst); value })
-        | Copy { dst; src } ->
-            let dst = cell_map.(dst) and src = cell_map.(src) in
-            if dst = src then None else Some (Copy { dst; src }))
-    ops
+  let ops =
+    List.filter_map
+      (fun op ->
+        match op with
+          | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
+          | Set_value { dst; value } ->
+              Some (Set_value { dst = cell_map.(dst); value })
+          | Copy { dst; src } ->
+              let dst = cell_map.(dst) and src = cell_map.(src) in
+              if dst = src then None else Some (Copy { dst; src }))
+      ops
+  in
+  (* The renaming must preserve the parallel-move property: no two
+     operations of one list write the same cell (the generated code relies
+     on this when saving clobbered Copy sources). *)
+  let dsts = List.map op_dest ops in
+  assert (List.length (List.sort_uniq compare dsts) = List.length dsts);
+  ops
 
 (* [compile rs] determinizes the NFA for an array of regexp rules. See the
    implementation overview at the top of this file. *)
@@ -620,7 +634,7 @@ let compile rs =
     let configs = Hashtbl.find tbl.configs num in
     let trans = transition regs tbl configs in
     let finals = finals_of rs configs in
-    let final_ops = final_ops_of rs configs finals in
+    let final_ops = final_ops_of regs rs configs finals in
     Hashtbl.add defs num { trans; finals; final_ops }
   done;
   let cell_map, num_tags = collapse_conflict_free regs in
