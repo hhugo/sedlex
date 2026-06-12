@@ -260,13 +260,11 @@ type config = node * addr IntMap.t
 let closure (seeds : config list) =
   let new_ids = Hashtbl.create 8 in
   let new_writes = ref [] in
-  let n_new = ref 0 in
   let new_id key w =
     match Hashtbl.find_opt new_ids key with
       | Some i -> i
       | None ->
-          let i = !n_new in
-          incr n_new;
+          let i = Hashtbl.length new_ids in
           Hashtbl.add new_ids key i;
           new_writes := (i, w) :: !new_writes;
           i
