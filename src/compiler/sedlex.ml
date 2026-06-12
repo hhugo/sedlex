@@ -234,7 +234,7 @@ let compile_re re =
 
 (* Determinization (tagged subset construction, see overview above) *)
 
-module IntMap = Map.Make (Int)
+module TagMap = Map.Make (Int)
 
 (* During transition computation, a logical tag maps to either a concrete
    memory cell ([Old]) or a write performed by the pending transition
@@ -244,7 +244,7 @@ type addr = Old of int | New of int
 (* What a [New] register will hold once the transition executes: the
    current position, or a discriminator value. *)
 type write = Wpos | Wval of int
-type config = node * addr IntMap.t
+type config = node * addr TagMap.t
 (* One active NFA path: the node it reached and, for each logical tag
    written along the path, the register holding the recorded value.
    A DFA state is a [config list] in priority order; in stored states
@@ -278,9 +278,9 @@ let closure (seeds : config list) =
         match n.tag with
           | None -> m
           | Some (Set_position { dst = t }) ->
-              IntMap.add t (New (new_id (`Pos t) Wpos)) m
+              TagMap.add t (New (new_id (`Pos t) Wpos)) m
           | Some (Set_value { dst = cell; value = v }) ->
-              IntMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
+              TagMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
           | Some (Copy _) -> assert false (* never carried by NFA nodes *)
       in
       (* Keep only configurations that matter: nodes with outgoing char
@@ -386,7 +386,7 @@ let check_conflicts regs configs =
   let seen = Hashtbl.create 8 in
   List.iter
     (fun ((_, m) : config) ->
-      IntMap.iter
+      TagMap.iter
         (fun tag a ->
           match Hashtbl.find_opt seen tag with
             | None -> Hashtbl.add seen tag a
@@ -411,7 +411,7 @@ let state_key (configs : config list) : state_key =
   in
   List.map
     (fun (n, m) ->
-      (n.id, List.map (fun (t, a) -> (t, canon a)) (IntMap.bindings m)))
+      (n.id, List.map (fun (t, a) -> (t, canon a)) (TagMap.bindings m)))
     configs
 
 (* DFA states discovered so far, numbered in creation order. *)
@@ -440,7 +440,7 @@ let concretize regs configs new_writes =
          (fun ((_, m) : config) ->
            List.filter_map
              (fun (_, a) -> match a with Old c -> Some c | New _ -> None)
-             (IntMap.bindings m))
+             (TagMap.bindings m))
          configs)
   in
   let assigned = Hashtbl.create 4 in
@@ -460,7 +460,7 @@ let concretize regs configs new_writes =
     List.map
       (fun (n, m) ->
         ( n,
-          IntMap.mapi
+          TagMap.mapi
             (fun tag a ->
               match a with Old _ -> a | New i -> Old (cell_for_new tag i))
             m ))
@@ -482,10 +482,10 @@ let moves_to candidate new_writes existing =
   in
   List.iter2
     (fun ((_, m_cand) : config) ((_, m_ex) : config) ->
-      IntMap.iter
+      TagMap.iter
         (fun tag a ->
           let dst =
-            match IntMap.find tag m_ex with Old c -> c | New _ -> assert false
+            match TagMap.find tag m_ex with Old c -> c | New _ -> assert false
           in
           match a with
             | Old src -> if src <> dst then set_move dst (Copy { dst; src })
@@ -561,7 +561,7 @@ let final_ops_of regs rs configs finals =
     | Some i ->
         let _, fin = rs.(i) in
         let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
-        IntMap.fold
+        TagMap.fold
           (fun tag a acc ->
             match a with
               | Old c ->
@@ -622,7 +622,7 @@ let compile rs =
   let tbl = make_state_table () in
   let init_candidate, init_writes =
     closure
-      (List.map (fun (entry, _) -> (entry, IntMap.empty)) (Array.to_list rs))
+      (List.map (fun (entry, _) -> (entry, TagMap.empty)) (Array.to_list rs))
   in
   let num0, init_tags = get_state regs tbl init_candidate init_writes in
   assert (num0 = 0);
