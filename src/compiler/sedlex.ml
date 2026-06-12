@@ -421,7 +421,6 @@ type state_table = {
   by_key : (state_key, int) Hashtbl.t;
   configs : (int, config list) Hashtbl.t;
       (* Stored configurations; all addresses are [Old]. *)
-  defs : (int, dfa_state) Hashtbl.t; (* Filled by the main loop. *)
   mutable n_states : int;
   todo : int Queue.t; (* States whose transitions are not yet built. *)
 }
@@ -430,7 +429,6 @@ let make_state_table () =
   {
     by_key = Hashtbl.create 31;
     configs = Hashtbl.create 31;
-    defs = Hashtbl.create 31;
     n_states = 0;
     todo = Queue.create ();
   }
@@ -616,18 +614,19 @@ let compile rs =
   in
   let num0, init_tags = get_state regs tbl init_candidate init_writes in
   assert (num0 = 0);
+  let defs : (int, dfa_state) Hashtbl.t = Hashtbl.create 31 in
   while not (Queue.is_empty tbl.todo) do
     let num = Queue.pop tbl.todo in
     let configs = Hashtbl.find tbl.configs num in
     let trans = transition regs tbl configs in
     let finals = finals_of rs configs in
     let final_ops = final_ops_of rs configs finals in
-    Hashtbl.add tbl.defs num { trans; finals; final_ops }
+    Hashtbl.add defs num { trans; finals; final_ops }
   done;
   let cell_map, num_tags = collapse_conflict_free regs in
   let dfa =
     Array.init tbl.n_states (fun i ->
-        let s = Hashtbl.find tbl.defs i in
+        let s = Hashtbl.find defs i in
         {
           s with
           trans =
