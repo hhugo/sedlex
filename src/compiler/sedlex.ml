@@ -332,263 +332,312 @@ type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 let op_dest = function
   | Copy { dst; _ } | Set_position { dst } | Set_value { dst; _ } -> dst
 
-(* [compile rs] determinizes the NFA for an array of regexp rules. See the
-   implementation overview at the top of this file. *)
-let compile rs =
-  let rs = Array.map compile_re rs in
-  let num_logical = !cur_tag in
-  (* Working registers live above the canonical cells 0..num_logical-1,
-     which are written only by [final_ops] and read by the generated
-     binding-extraction code. *)
-  let next_cell = ref num_logical in
-  (* Per-logical-tag pool of working registers allocated so far; reusing
-     them keeps the total cell count small. Pools of distinct tags are
-     disjoint. *)
-  let pools : (int, int list) Hashtbl.t = Hashtbl.create 8 in
-  let alloc_cell used tag =
-    let pool =
-      match Hashtbl.find_opt pools tag with Some l -> l | None -> []
-    in
-    match List.find_opt (fun c -> not (List.mem c !used)) pool with
-      | Some c ->
-          used := c :: !used;
-          c
+(* === Determinization state ===
+
+   The subset construction threads two pieces of mutable state, made
+   explicit as records: [registers] (memory-cell allocation) and
+   [state_table] (the DFA states discovered so far). *)
+
+(* Memory-cell allocation state. *)
+type registers = {
+  num_logical : int;
+      (* Number of logical tags. Canonical cells 0..num_logical-1 are
+         written only by [final_ops] and read by the generated
+         binding-extraction code; working registers live above them. *)
+  mutable next_cell : int; (* Next fresh working register. *)
+  pools : (int, int list) Hashtbl.t;
+      (* Per-logical-tag pool of working registers allocated so far;
+         reusing them keeps the total cell count small. Pools of distinct
+         tags are disjoint. *)
+  conflicted : (int, unit) Hashtbl.t;
+      (* Tags seen holding two distinct registers in one DFA state. *)
+}
+
+let make_registers num_logical =
+  {
+    num_logical;
+    next_cell = num_logical;
+    pools = Hashtbl.create 8;
+    conflicted = Hashtbl.create 8;
+  }
+
+(* [alloc_cell regs used tag] picks a working register for [tag],
+   preferring a register from the tag's pool not already in [used]. *)
+let alloc_cell regs used tag =
+  let pool =
+    match Hashtbl.find_opt regs.pools tag with Some l -> l | None -> []
+  in
+  match List.find_opt (fun c -> not (List.mem c !used)) pool with
+    | Some c ->
+        used := c :: !used;
+        c
+    | None ->
+        let c = regs.next_cell in
+        regs.next_cell <- regs.next_cell + 1;
+        Hashtbl.replace regs.pools tag (c :: pool);
+        used := c :: !used;
+        c
+
+(* [check_conflicts regs configs] records in [regs.conflicted] every tag
+   for which [configs] holds two distinct registers — i.e. two
+   simultaneously-live NFA paths recorded different values. Conflict-free
+   tags can live directly in their canonical cell (see
+   [collapse_conflict_free]). Checking candidates is enough: a stored
+   state has the same canonical key, hence the same sharing structure. *)
+let check_conflicts regs configs =
+  let seen = Hashtbl.create 8 in
+  List.iter
+    (fun ((_, m) : config) ->
+      IntMap.iter
+        (fun tag a ->
+          match Hashtbl.find_opt seen tag with
+            | None -> Hashtbl.add seen tag a
+            | Some a' -> if a <> a' then Hashtbl.replace regs.conflicted tag ())
+        m)
+    configs
+
+(* DFA states are looked up modulo bijective register renaming: the key
+   numbers each distinct address by first occurrence, so two states with
+   the same node order and the same register-sharing structure collide. *)
+type state_key = (int * (int * int) list) list
+
+let state_key (configs : config list) : state_key =
+  let tbl = Hashtbl.create 8 in
+  let canon a =
+    match Hashtbl.find_opt tbl a with
+      | Some i -> i
       | None ->
-          let c = !next_cell in
-          incr next_cell;
-          Hashtbl.replace pools tag (c :: pool);
-          used := c :: !used;
+          let i = Hashtbl.length tbl in
+          Hashtbl.add tbl a i;
+          i
+  in
+  List.map
+    (fun (n, m) ->
+      (n.id, List.map (fun (t, a) -> (t, canon a)) (IntMap.bindings m)))
+    configs
+
+(* DFA states discovered so far, numbered in creation order. *)
+type state_table = {
+  by_key : (state_key, int) Hashtbl.t;
+  configs : (int, config list) Hashtbl.t;
+      (* Stored configurations; all addresses are [Old]. *)
+  defs : (int, dfa_state) Hashtbl.t; (* Filled by the main loop. *)
+  mutable n_states : int;
+  todo : int Queue.t; (* States whose transitions are not yet built. *)
+}
+
+let make_state_table () =
+  {
+    by_key = Hashtbl.create 31;
+    configs = Hashtbl.create 31;
+    defs = Hashtbl.create 31;
+    n_states = 0;
+    todo = Queue.create ();
+  }
+
+(* Creating a new state: [Old] registers are kept as-is, [New] writes get
+   concrete cells; the transition only carries the Set operations. *)
+let concretize regs configs new_writes =
+  let used =
+    ref
+      (List.concat_map
+         (fun ((_, m) : config) ->
+           List.filter_map
+             (fun (_, a) -> match a with Old c -> Some c | New _ -> None)
+             (IntMap.bindings m))
+         configs)
+  in
+  let assigned = Hashtbl.create 4 in
+  let ops = ref [] in
+  let cell_for_new tag i =
+    match Hashtbl.find_opt assigned i with
+      | Some c -> c
+      | None ->
+          let c = alloc_cell regs used tag in
+          Hashtbl.add assigned i c;
+          (match List.assoc i new_writes with
+            | Wpos -> ops := Set_position { dst = c } :: !ops
+            | Wval v -> ops := Set_value { dst = c; value = v } :: !ops);
           c
   in
-  (* DFA states are looked up modulo bijective register renaming: the key
-     numbers each distinct address by first occurrence, so two states with
-     the same node order and the same register-sharing structure collide. *)
-  let state_key (configs : config list) =
-    let tbl = Hashtbl.create 8 in
-    let canon a =
-      match Hashtbl.find_opt tbl a with
-        | Some i -> i
-        | None ->
-            let i = Hashtbl.length tbl in
-            Hashtbl.add tbl a i;
-            i
-    in
+  let configs =
     List.map
       (fun (n, m) ->
-        (n.id, List.map (fun (t, a) -> (t, canon a)) (IntMap.bindings m)))
+        ( n,
+          IntMap.mapi
+            (fun tag a ->
+              match a with Old _ -> a | New i -> Old (cell_for_new tag i))
+            m ))
       configs
   in
-  let states = Hashtbl.create 31 in
-  let state_configs : (int, config list) Hashtbl.t = Hashtbl.create 31 in
-  let states_def = Hashtbl.create 31 in
-  let counter = ref 0 in
-  let todo = Queue.create () in
-  (* Creating a new state: [Old] registers are kept as-is, [New] writes get
-     concrete cells; the transition only carries the Set operations. *)
-  let concretize configs new_writes =
-    let used =
-      ref
-        (List.concat_map
-           (fun ((_, m) : config) ->
-             List.filter_map
-               (fun (_, a) -> match a with Old c -> Some c | New _ -> None)
-               (IntMap.bindings m))
-           configs)
-    in
-    let assigned = Hashtbl.create 4 in
-    let ops = ref [] in
-    let cell_for_new tag i =
-      match Hashtbl.find_opt assigned i with
-        | Some c -> c
-        | None ->
-            let c = alloc_cell used tag in
-            Hashtbl.add assigned i c;
-            (match List.assoc i new_writes with
-              | Wpos -> ops := Set_position { dst = c } :: !ops
-              | Wval v -> ops := Set_value { dst = c; value = v } :: !ops);
-            c
-    in
-    let configs =
-      List.map
-        (fun (n, m) ->
-          ( n,
-            IntMap.mapi
-              (fun tag a ->
-                match a with Old _ -> a | New i -> Old (cell_for_new tag i))
-              m ))
-        configs
-    in
-    (configs, !ops)
+  (configs, !ops)
+
+(* Reaching an existing state: emit the register moves that realign the
+   candidate's registers with the stored state's maps. Equal canonical
+   keys guarantee each destination cell gets a single consistent move.
+   The result is a parallel move (Copy sources observe the pre-transition
+   state); it is sorted by destination only for output stability. *)
+let moves_to candidate new_writes existing =
+  let moves = Hashtbl.create 8 in
+  List.iter2
+    (fun ((_, m_cand) : config) ((_, m_ex) : config) ->
+      IntMap.iter
+        (fun tag a ->
+          let dst =
+            match IntMap.find tag m_ex with Old c -> c | New _ -> assert false
+          in
+          match a with
+            | Old src ->
+                if src <> dst then Hashtbl.replace moves dst (Copy { dst; src })
+            | New i -> (
+                match List.assoc i new_writes with
+                  | Wpos -> Hashtbl.replace moves dst (Set_position { dst })
+                  | Wval v ->
+                      Hashtbl.replace moves dst (Set_value { dst; value = v })))
+        m_cand)
+    candidate existing;
+  let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
+  List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs
+
+(* [get_state regs tbl candidate new_writes] returns the state number for
+   [candidate], creating and enqueuing it if new, plus the tag operations
+   the transition reaching it must perform. *)
+let get_state regs tbl candidate new_writes =
+  check_conflicts regs candidate;
+  let key = state_key candidate in
+  match Hashtbl.find_opt tbl.by_key key with
+    | Some num ->
+        (num, moves_to candidate new_writes (Hashtbl.find tbl.configs num))
+    | None ->
+        let configs, ops = concretize regs candidate new_writes in
+        let num = tbl.n_states in
+        tbl.n_states <- num + 1;
+        Hashtbl.add tbl.by_key key num;
+        Hashtbl.add tbl.configs num configs;
+        Queue.push num tbl.todo;
+        (num, ops)
+
+(* [transition regs tbl configs] builds the outgoing transitions of one
+   DFA state: collect the character moves of every configuration, split
+   them into pairwise-disjoint sets, then close over and look up each
+   piece. *)
+let transition regs tbl configs =
+  let moves =
+    List.concat_map
+      (fun ((n, m) : config) -> List.map (fun (c, n') -> (c, (n', m))) n.trans)
+      configs
   in
-  (* Reaching an existing state: emit the register moves that realign the
-     candidate's registers with the stored state's maps. Equal canonical
-     keys guarantee each destination cell gets a single consistent move.
-     The result is a parallel move (Copy sources observe the pre-transition
-     state); it is sorted by destination only for output stability. *)
-  let moves_to candidate new_writes existing =
-    let moves = Hashtbl.create 8 in
-    List.iter2
-      (fun ((_, m_cand) : config) ((_, m_ex) : config) ->
-        IntMap.iter
-          (fun tag a ->
-            let dst =
-              match IntMap.find tag m_ex with
-                | Old c -> c
-                | New _ -> assert false
-            in
+  let pieces = split_moves moves in
+  let t =
+    List.map
+      (fun (cset, seeds) ->
+        let candidate, new_writes = closure seeds in
+        let num, ops = get_state regs tbl candidate new_writes in
+        (cset, num, ops))
+      pieces
+  in
+  let t = Array.of_list t in
+  Array.sort (fun (c1, _, _) (c2, _, _) -> compare c1 c2) t;
+  t
+
+let lowest_final finals =
+  let n = Array.length finals in
+  let rec aux i =
+    if i = n then None else if finals.(i) then Some i else aux (i + 1)
+  in
+  aux 0
+
+let finals_of rs configs =
+  Array.map
+    (fun (_, fin) -> List.exists (fun ((n, _) : config) -> n == fin) configs)
+    rs
+
+(* Materialize the accepting configuration's registers into the
+   canonical cells (cell = logical tag id) just before [mark]. Sources
+   are working registers (>= num_logical) and destinations canonical
+   cells, so the copies never interfere with each other. *)
+let final_ops_of rs configs finals =
+  match lowest_final finals with
+    | None -> []
+    | Some i ->
+        let _, fin = rs.(i) in
+        let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
+        IntMap.fold
+          (fun tag a acc ->
             match a with
-              | Old src ->
-                  if src <> dst then
-                    Hashtbl.replace moves dst (Copy { dst; src })
-              | New i -> (
-                  match List.assoc i new_writes with
-                    | Wpos -> Hashtbl.replace moves dst (Set_position { dst })
-                    | Wval v ->
-                        Hashtbl.replace moves dst (Set_value { dst; value = v })
-                  ))
-          m_cand)
-      candidate existing;
-    let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
-    List.sort (fun a b -> compare (op_dest a) (op_dest b)) mvs
-  in
-  (* A tag is conflicted when some DFA state holds two distinct registers
-     for it — i.e. two simultaneously-live NFA paths recorded different
-     values. Conflict-free tags can live directly in their canonical cell
-     (see the rename pass below). Checking candidates is enough: a stored
-     state has the same canonical key, hence the same sharing structure. *)
-  let conflicted = Hashtbl.create 8 in
-  let check_conflicts configs =
-    let seen = Hashtbl.create 8 in
-    List.iter
-      (fun ((_, m) : config) ->
-        IntMap.iter
-          (fun tag a ->
-            match Hashtbl.find_opt seen tag with
-              | None -> Hashtbl.add seen tag a
-              | Some a' -> if a <> a' then Hashtbl.replace conflicted tag ())
-          m)
-      configs
-  in
-  let get_state candidate new_writes =
-    check_conflicts candidate;
-    let key = state_key candidate in
-    match Hashtbl.find_opt states key with
-      | Some num ->
-          (num, moves_to candidate new_writes (Hashtbl.find state_configs num))
-      | None ->
-          let configs, ops = concretize candidate new_writes in
-          let num = !counter in
-          incr counter;
-          Hashtbl.add states key num;
-          Hashtbl.add state_configs num configs;
-          Queue.push num todo;
-          (num, ops)
-  in
-  let transition configs =
-    let moves =
-      List.concat_map
-        (fun ((n, m) : config) ->
-          List.map (fun (c, n') -> (c, (n', m))) n.trans)
-        configs
-    in
-    let pieces = split_moves moves in
-    let t =
-      List.map
-        (fun (cset, seeds) ->
-          let candidate, new_writes = closure seeds in
-          let num, ops = get_state candidate new_writes in
-          (cset, num, ops))
-        pieces
-    in
-    let t = Array.of_list t in
-    Array.sort (fun (c1, _, _) (c2, _, _) -> compare c1 c2) t;
-    t
-  in
-  let lowest_final finals =
-    let n = Array.length finals in
-    let rec aux i =
-      if i = n then None else if finals.(i) then Some i else aux (i + 1)
-    in
-    aux 0
-  in
-  let finals_of configs =
-    Array.map
-      (fun (_, fin) -> List.exists (fun ((n, _) : config) -> n == fin) configs)
-      rs
-  in
-  (* Materialize the accepting configuration's registers into the
-     canonical cells (cell = logical tag id) just before [mark]. Sources
-     are working registers (>= num_logical) and destinations canonical
-     cells, so the copies never interfere with each other. *)
-  let final_ops_of configs finals =
-    match lowest_final finals with
-      | None -> []
-      | Some i ->
-          let _, fin = rs.(i) in
-          let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
-          IntMap.fold
-            (fun tag a acc ->
-              match a with
-                | Old c ->
-                    if c = tag then acc else Copy { dst = tag; src = c } :: acc
-                | New _ -> assert false)
-            m []
-  in
-  let init_candidate, init_writes =
-    closure
-      (List.map (fun (entry, _) -> (entry, IntMap.empty)) (Array.to_list rs))
-  in
-  let num0, init_tags = get_state init_candidate init_writes in
-  assert (num0 = 0);
-  while not (Queue.is_empty todo) do
-    let num = Queue.pop todo in
-    let configs = Hashtbl.find state_configs num in
-    let trans = transition configs in
-    let finals = finals_of configs in
-    let final_ops = final_ops_of configs finals in
-    Hashtbl.add states_def num { trans; finals; final_ops }
-  done;
-  (* Rename pass: a conflict-free tag only ever needs one register at a
-     time, so its whole pool collapses into its canonical cell — writes go
-     there directly, and the realignment / materialization copies become
-     no-op Copy(t, t) and are dropped. Register pools are per-tag, so the
-     rename cannot collide with another tag's cells. The surviving working
-     registers (conflicted tags) are compacted just above the canonical
-     cells. *)
-  let cell_map = Array.init !next_cell (fun c -> c) in
+              | Old c ->
+                  if c = tag then acc else Copy { dst = tag; src = c } :: acc
+              | New _ -> assert false)
+          m []
+
+(* Rename pass: a conflict-free tag only ever needs one register at a
+   time, so its whole pool collapses into its canonical cell — writes go
+   there directly, and the realignment / materialization copies become
+   no-op Copy(t, t) and are dropped. Register pools are per-tag, so the
+   rename cannot collide with another tag's cells. The surviving working
+   registers (conflicted tags) are compacted just above the canonical
+   cells. Returns the cell renaming and the total cell count after it. *)
+let collapse_conflict_free regs =
+  let cell_map = Array.init regs.next_cell (fun c -> c) in
   Hashtbl.iter
     (fun tag pool ->
-      if not (Hashtbl.mem conflicted tag) then
+      if not (Hashtbl.mem regs.conflicted tag) then
         List.iter (fun c -> cell_map.(c) <- tag) pool)
-    pools;
-  let compact = ref num_logical in
-  for c = num_logical to !next_cell - 1 do
+    regs.pools;
+  let compact = ref regs.num_logical in
+  for c = regs.num_logical to regs.next_cell - 1 do
     if cell_map.(c) = c then (
       cell_map.(c) <- !compact;
       incr compact)
   done;
-  let rewrite_ops ops =
-    List.filter_map
-      (fun op ->
-        match op with
-          | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
-          | Set_value { dst; value } ->
-              Some (Set_value { dst = cell_map.(dst); value })
-          | Copy { dst; src } ->
-              let dst = cell_map.(dst) and src = cell_map.(src) in
-              if dst = src then None else Some (Copy { dst; src }))
-      ops
+  (cell_map, !compact)
+
+let rewrite_ops cell_map ops =
+  List.filter_map
+    (fun op ->
+      match op with
+        | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
+        | Set_value { dst; value } ->
+            Some (Set_value { dst = cell_map.(dst); value })
+        | Copy { dst; src } ->
+            let dst = cell_map.(dst) and src = cell_map.(src) in
+            if dst = src then None else Some (Copy { dst; src }))
+    ops
+
+(* [compile rs] determinizes the NFA for an array of regexp rules. See the
+   implementation overview at the top of this file. *)
+let compile rs =
+  let rs = Array.map compile_re rs in
+  let regs = make_registers !cur_tag in
+  let tbl = make_state_table () in
+  let init_candidate, init_writes =
+    closure
+      (List.map (fun (entry, _) -> (entry, IntMap.empty)) (Array.to_list rs))
   in
+  let num0, init_tags = get_state regs tbl init_candidate init_writes in
+  assert (num0 = 0);
+  while not (Queue.is_empty tbl.todo) do
+    let num = Queue.pop tbl.todo in
+    let configs = Hashtbl.find tbl.configs num in
+    let trans = transition regs tbl configs in
+    let finals = finals_of rs configs in
+    let final_ops = final_ops_of rs configs finals in
+    Hashtbl.add tbl.defs num { trans; finals; final_ops }
+  done;
+  let cell_map, num_tags = collapse_conflict_free regs in
   let dfa =
-    Array.init !counter (fun i ->
-        let s = Hashtbl.find states_def i in
+    Array.init tbl.n_states (fun i ->
+        let s = Hashtbl.find tbl.defs i in
         {
           s with
-          trans = Array.map (fun (c, t, ops) -> (c, t, rewrite_ops ops)) s.trans;
-          final_ops = rewrite_ops s.final_ops;
+          trans =
+            Array.map
+              (fun (c, t, ops) -> (c, t, rewrite_ops cell_map ops))
+              s.trans;
+          final_ops = rewrite_ops cell_map s.final_ops;
         })
   in
-  { dfa; init_tags = rewrite_ops init_tags; num_tags = !compact }
+  { dfa; init_tags = rewrite_ops cell_map init_tags; num_tags }
 
 (* High-level compilation from IR.
 
