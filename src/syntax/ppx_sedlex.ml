@@ -238,7 +238,8 @@ let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
   let dests =
     List.map
       (fun (op : Sedlex.tag_op) ->
-        match op with Copy (d, _) | Set_position d | Set_value (d, _) -> d)
+        match op with
+          | Copy { dst; _ } | Set_position { dst } | Set_value { dst; _ } -> dst)
       ops
   in
   let clobbered =
@@ -246,7 +247,7 @@ let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
       (List.filter_map
          (fun (op : Sedlex.tag_op) ->
            match op with
-             | Copy (_, s) when List.mem s dests -> Some s
+             | Copy { src; _ } when List.mem src dests -> Some src
              | _ -> None)
          ops)
   in
@@ -255,21 +256,21 @@ let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
     List.fold_right
       (fun (op : Sedlex.tag_op) acc ->
         match op with
-          | Set_position t ->
+          | Set_position { dst } ->
               [%expr
-                Sedlexing.__private__set_mem_pos [%e lexbuf] [%e eint ~loc t];
+                Sedlexing.__private__set_mem_pos [%e lexbuf] [%e eint ~loc dst];
                 [%e acc]]
-          | Set_value (cell, value) ->
+          | Set_value { dst; value } ->
               [%expr
                 Sedlexing.__private__set_mem_value [%e lexbuf]
-                  [%e eint ~loc cell] [%e eint ~loc value];
+                  [%e eint ~loc dst] [%e eint ~loc value];
                 [%e acc]]
-          | Copy (dst, src) when List.mem src clobbered ->
+          | Copy { dst; src } when List.mem src clobbered ->
               [%expr
                 Sedlexing.__private__mem_set [%e lexbuf] [%e eint ~loc dst]
                   [%e evar ~loc (local src)];
                 [%e acc]]
-          | Copy (dst, src) ->
+          | Copy { dst; src } ->
               [%expr
                 Sedlexing.__private__copy_mem [%e lexbuf] [%e eint ~loc dst]
                   [%e eint ~loc src];

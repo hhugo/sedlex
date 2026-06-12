@@ -86,7 +86,10 @@ module Cset = Cset
 
 (* NFA *)
 
-type tag_op = Set_position of int | Set_value of int * int | Copy of int * int
+type tag_op =
+  | Set_position of { dst : int }
+  | Set_value of { dst : int; value : int }
+  | Copy of { dst : int; src : int }
 
 type node = {
   id : int;  (** Unique identifier, used for sorting transitions by target. *)
@@ -185,10 +188,10 @@ let bind r =
   let start_tag = new_tag () in
   let end_tag = new_tag () in
   let wrapped succ =
-    let end_node = new_tagged_node (Set_position end_tag) in
+    let end_node = new_tagged_node (Set_position { dst = end_tag }) in
     end_node.eps <- [succ];
     let inner = r end_node in
-    let start_node = new_tagged_node (Set_position start_tag) in
+    let start_node = new_tagged_node (Set_position { dst = start_tag }) in
     start_node.eps <- [inner];
     start_node
   in
@@ -198,7 +201,7 @@ let bind_start_only r =
   let start_tag = new_tag () in
   let wrapped succ =
     let inner = r succ in
-    let start_node = new_tagged_node (Set_position start_tag) in
+    let start_node = new_tagged_node (Set_position { dst = start_tag }) in
     start_node.eps <- [inner];
     start_node
   in
@@ -207,7 +210,7 @@ let bind_start_only r =
 let bind_end_only r =
   let end_tag = new_tag () in
   let wrapped succ =
-    let end_node = new_tagged_node (Set_position end_tag) in
+    let end_node = new_tagged_node (Set_position { dst = end_tag }) in
     end_node.eps <- [succ];
     r end_node
   in
@@ -217,7 +220,7 @@ let new_disc_cell () = new_tag ()
 
 let bind_disc r cell value =
   let wrapped succ =
-    let disc_node = new_tagged_node (Set_value (cell, value)) in
+    let disc_node = new_tagged_node (Set_value { dst = cell; value }) in
     disc_node.eps <- [succ];
     r disc_node
   in
@@ -276,8 +279,9 @@ let closure (seeds : config list) =
       let m =
         match n.tag with
           | None -> m
-          | Some (Set_position t) -> IntMap.add t (New (new_id (`Pos t) Wpos)) m
-          | Some (Set_value (cell, v)) ->
+          | Some (Set_position { dst = t }) ->
+              IntMap.add t (New (new_id (`Pos t) Wpos)) m
+          | Some (Set_value { dst = cell; value = v }) ->
               IntMap.add cell (New (new_id (`Val (cell, v)) (Wval v))) m
           | Some (Copy _) -> assert false (* never carried by NFA nodes *)
       in
@@ -325,7 +329,8 @@ type dfa_state = {
 type dfa = dfa_state array
 type compiled = { dfa : dfa; init_tags : tag_op list; num_tags : int }
 
-let op_dest = function Copy (d, _) | Set_position d | Set_value (d, _) -> d
+let op_dest = function
+  | Copy { dst; _ } | Set_position { dst } | Set_value { dst; _ } -> dst
 
 (* [compile rs] determinizes the NFA for an array of regexp rules. See the
    implementation overview at the top of this file. *)
@@ -399,8 +404,8 @@ let compile rs =
             let c = alloc_cell used tag in
             Hashtbl.add assigned i c;
             (match List.assoc i new_writes with
-              | Wpos -> ops := Set_position c :: !ops
-              | Wval v -> ops := Set_value (c, v) :: !ops);
+              | Wpos -> ops := Set_position { dst = c } :: !ops
+              | Wval v -> ops := Set_value { dst = c; value = v } :: !ops);
             c
     in
     let configs =
@@ -433,11 +438,14 @@ let compile rs =
             in
             match a with
               | Old src ->
-                  if src <> dst then Hashtbl.replace moves dst (Copy (dst, src))
+                  if src <> dst then
+                    Hashtbl.replace moves dst (Copy { dst; src })
               | New i -> (
                   match List.assoc i new_writes with
-                    | Wpos -> Hashtbl.replace moves dst (Set_position dst)
-                    | Wval v -> Hashtbl.replace moves dst (Set_value (dst, v))))
+                    | Wpos -> Hashtbl.replace moves dst (Set_position { dst })
+                    | Wval v ->
+                        Hashtbl.replace moves dst (Set_value { dst; value = v })
+                  ))
           m_cand)
       candidate existing;
     let mvs = Hashtbl.fold (fun _ op acc -> op :: acc) moves [] in
@@ -521,7 +529,8 @@ let compile rs =
           IntMap.fold
             (fun tag a acc ->
               match a with
-                | Old c -> if c = tag then acc else Copy (tag, c) :: acc
+                | Old c ->
+                    if c = tag then acc else Copy { dst = tag; src = c } :: acc
                 | New _ -> assert false)
             m []
   in
@@ -562,11 +571,12 @@ let compile rs =
     List.filter_map
       (fun op ->
         match op with
-          | Set_position d -> Some (Set_position cell_map.(d))
-          | Set_value (d, v) -> Some (Set_value (cell_map.(d), v))
-          | Copy (d, s) ->
-              let d = cell_map.(d) and s = cell_map.(s) in
-              if d = s then None else Some (Copy (d, s)))
+          | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
+          | Set_value { dst; value } ->
+              Some (Set_value { dst = cell_map.(dst); value })
+          | Copy { dst; src } ->
+              let dst = cell_map.(dst) and src = cell_map.(src) in
+              if dst = src then None else Some (Copy { dst; src }))
       ops
   in
   let dfa =
@@ -822,9 +832,10 @@ let dfa_to_dot dfa =
   bprintf buf "  _start [shape=point];\n";
   bprintf buf "  _start -> state0;\n\n";
   let tag_op_to_string = function
-    | Set_position t -> "t" ^ string_of_int t
-    | Set_value (c, v) -> "d" ^ string_of_int c ^ "=" ^ string_of_int v
-    | Copy (dst, src) -> "t" ^ string_of_int dst ^ "<-t" ^ string_of_int src
+    | Set_position { dst } -> "t" ^ string_of_int dst
+    | Set_value { dst; value } ->
+        "d" ^ string_of_int dst ^ "=" ^ string_of_int value
+    | Copy { dst; src } -> "t" ^ string_of_int dst ^ "<-t" ^ string_of_int src
   in
   Array.iteri
     (fun i { trans; finals; final_ops } ->

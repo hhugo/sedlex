@@ -212,15 +212,15 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
     let saved =
       List.filter_map
         (fun (op : Sedlex.tag_op) ->
-          match op with Copy (_, src) -> Some (src, mem.(src)) | _ -> None)
+          match op with Copy { src; _ } -> Some (src, mem.(src)) | _ -> None)
         ops
     in
     List.iter
       (fun (op : Sedlex.tag_op) ->
         match op with
-          | Set_position t -> mem.(t) <- pos
-          | Set_value (cell, v) -> mem.(cell) <- v
-          | Copy (dst, src) -> mem.(dst) <- List.assoc src saved)
+          | Set_position { dst } -> mem.(dst) <- pos
+          | Set_value { dst; value } -> mem.(dst) <- value
+          | Copy { dst; src } -> mem.(dst) <- List.assoc src saved)
       ops
   in
   apply 0 compiled.init_tags;
