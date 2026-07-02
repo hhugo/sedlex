@@ -1366,6 +1366,21 @@ let%expect_test "rep_1_1_char_ops" =
     | _ -> assert false);
   [%expect {| inter-ok |}]
 
+let%expect_test "empty_pattern" =
+  (* A nullable-only rule makes DFA state 0 an accepting sink; the generated
+     code must not emit an empty `let rec` or call an undefined state function.
+     [""] matches the zero-length prefix at position 0 regardless of input. *)
+  let lex buf =
+    match%sedlex buf with "" -> "empty" | _ -> "other"
+  in
+  Printf.printf "%s\n" (lex (Sedlexing.Utf8.from_string ""));
+  Printf.printf "%s\n" (lex (Sedlexing.Utf8.from_string "abc"));
+  [%expect
+    {|
+    empty
+    empty
+    |}]
+
 let num_mem buf = Sedlexing.__private__num_mem_cells buf
 
 let%expect_test "as_bindings_num_mem_cells" =
