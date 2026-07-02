@@ -145,7 +145,7 @@ let%expect_test "realistic: multi-token lexer" =
       match __sedlex_partition_10 (Sedlexing.__private__next_int buf) with
       | 0 -> 3
       | _ -> Sedlexing.backtrack buf in
-    match Sedlexing.start buf;
+    match Sedlexing.__private__start buf;
           Sedlexing.__private__init_mem buf 2;
           __sedlex_state_0 buf
     with

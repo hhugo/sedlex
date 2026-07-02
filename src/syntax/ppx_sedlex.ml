@@ -309,9 +309,19 @@ let call_state lexbuf (auto : Sedlex.dfa) state =
       state function (or returns the rule index for sink states).
    4. The default arm calls [backtrack] to return the last accepted rule.
    Returns [] for accepting states with no outgoing transitions (sinks). *)
-let gen_state (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
+let gen_state ~tagged (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
     { Sedlex.trans; finals; final_ops } =
   let loc = default_loc in
+  (* Blocks with [as] bindings snapshot/restore the mem cells in mark/backtrack;
+     tagless blocks skip that with the [_no_mem] variants (see sedlexing.mli). *)
+  let backtrack =
+    if tagged then [%expr Sedlexing.backtrack [%e lexbuf]]
+    else [%expr Sedlexing.__private__backtrack_no_mem [%e lexbuf]]
+  in
+  let mark i =
+    if tagged then [%expr Sedlexing.mark [%e lexbuf] [%e eint ~loc i]]
+    else [%expr Sedlexing.__private__mark_no_mem [%e lexbuf] [%e eint ~loc i]]
+  in
   let partition = Array.map (fun (cs, _, _) -> cs) trans in
   let cases =
     Array.mapi
@@ -325,13 +335,7 @@ let gen_state (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
     pexp_match ~loc
       (appfun (partition_name partition)
          [[%expr Sedlexing.__private__next_int [%e lexbuf]]])
-      (cases
-      @ [
-          case
-            ~lhs:[%pat? _]
-            ~guard:None
-            ~rhs:[%expr Sedlexing.backtrack [%e lexbuf]];
-        ])
+      (cases @ [ case ~lhs:[%pat? _] ~guard:None ~rhs:backtrack ])
   in
   let ret body =
     let lhs = pvar ~loc:lexbuf.pexp_loc lexbuf_name in
@@ -348,7 +352,7 @@ let gen_state (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
         ret
           (gen_tag_ops lexbuf final_ops
              [%expr
-               Sedlexing.mark [%e lexbuf] [%e eint ~loc i];
+               [%e mark i];
                [%e body ()]])
 
 (* [gen_recflag auto] determines whether the generated state functions need
@@ -380,10 +384,11 @@ let gen_definition ((_, lexbuf) as lexbuf_with_name)
     (compiled : Sedlex.compiled) l error =
   let loc = default_loc in
   let auto = compiled.dfa in
+  let tagged = compiled.num_tags > 0 in
   let cases =
     List.mapi (fun i (_, e) -> case ~lhs:(pint ~loc i) ~guard:None ~rhs:e) l
   in
-  let states = Array.mapi (gen_state lexbuf_with_name auto) auto in
+  let states = Array.mapi (gen_state ~tagged lexbuf_with_name auto) auto in
   let states = List.flatten (Array.to_list states) in
   let start_expr =
     if compiled.num_tags > 0 then (
@@ -396,11 +401,11 @@ let gen_definition ((_, lexbuf) as lexbuf_with_name)
         gen_tag_ops lexbuf compiled.init_tags (call_state lexbuf auto 0)
       in
       pexp_sequence ~loc
-        [%expr Sedlexing.start [%e lexbuf]]
+        [%expr Sedlexing.__private__start [%e lexbuf]]
         (pexp_sequence ~loc init_mem set_init_tags))
     else
       pexp_sequence ~loc
-        [%expr Sedlexing.start [%e lexbuf]]
+        [%expr Sedlexing.__private__start [%e lexbuf]]
         (call_state lexbuf auto 0)
   in
   let match_expr =

@@ -234,6 +234,22 @@ val backtrack : lexbuf -> int
     and can be removed at any time. *)
 val __private__next_int : lexbuf -> int
 
+(** [__private__start], [__private__mark_no_mem] and [__private__backtrack_no_mem]
+    are the entry points emitted by generated code. They behave like {!start},
+    {!mark} and {!backtrack} but skip the tagged-mem snapshot/restore:
+    [__private__start] because a block using [as] bindings re-initializes the
+    cells with {!__private__init_mem} right after (and a block without bindings
+    never reads them); the [_no_mem] mark/backtrack are used only by blocks with
+    no [as] bindings, whose hot path must not blit cells left over from an
+    earlier block on the same lexbuf. Blocks with bindings keep using {!mark}
+    and {!backtrack}.
+
+    This is a private API used by generated code and may change at any time. *)
+val __private__start : lexbuf -> unit
+
+val __private__mark_no_mem : lexbuf -> int -> unit
+val __private__backtrack_no_mem : lexbuf -> int
+
 (** Tagged DFA memory cells for [as] bindings.
 
     The following functions manage an internal array of memory cells used to
