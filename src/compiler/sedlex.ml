@@ -321,7 +321,7 @@ let split_moves (moves : (Cset.t * config) list) : (Cset.t * config list) list =
 type dfa_state = {
   trans : (Cset.t * int * tag_op list) array;
   finals : bool array;
-  final_ops : tag_op list;
+  accept : (int * tag_op list) option;
 }
 
 type dfa = dfa_state array
@@ -551,26 +551,30 @@ let finals_of rs configs =
     (fun (_, fin) -> List.exists (fun ((n, _) : config) -> n == fin) configs)
     rs
 
-(* Materialize the accepting configuration's registers into the
+(* Materialize accepting rule [i]'s configuration registers into the
    canonical cells (cell = logical tag id) just before [mark]. Sources
    are working registers (>= num_logical) and destinations canonical
    cells, so the copies never interfere with each other. *)
-let final_ops_of regs rs configs finals =
+let final_ops_of regs rs configs i =
+  let _, fin = rs.(i) in
+  let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
+  TagMap.fold
+    (fun tag a acc ->
+      match a with
+        | Old c ->
+            if c = tag then acc
+            else (
+              assert (c >= regs.num_logical);
+              Copy { dst = tag; src = c } :: acc)
+        | New _ -> assert false)
+    m []
+
+(* Resolve rule priority: the accepting state carries the lowest-numbered
+   (highest-priority) matching rule and the ops materializing its registers. *)
+let accept_of regs rs configs finals =
   match lowest_final finals with
-    | None -> []
-    | Some i ->
-        let _, fin = rs.(i) in
-        let _, m = List.find (fun ((n, _) : config) -> n == fin) configs in
-        TagMap.fold
-          (fun tag a acc ->
-            match a with
-              | Old c ->
-                  if c = tag then acc
-                  else (
-                    assert (c >= regs.num_logical);
-                    Copy { dst = tag; src = c } :: acc)
-              | New _ -> assert false)
-          m []
+    | None -> None
+    | Some i -> Some (i, final_ops_of regs rs configs i)
 
 (* Rename pass: a conflict-free tag only ever needs one register at a
    time, so its whole pool collapses into its canonical cell — writes go
@@ -632,8 +636,8 @@ let compile rs =
     let configs = Hashtbl.find tbl.configs num in
     let trans = transition regs tbl configs in
     let finals = finals_of rs configs in
-    let final_ops = final_ops_of regs rs configs finals in
-    Hashtbl.add defs num { trans; finals; final_ops }
+    let accept = accept_of regs rs configs finals in
+    Hashtbl.add defs num { trans; finals; accept }
   done;
   let cell_map, num_tags = collapse_conflict_free regs in
   let dfa =
@@ -645,7 +649,10 @@ let compile rs =
             Array.map
               (fun (c, t, ops) -> (c, t, rewrite_ops cell_map ops))
               s.trans;
-          final_ops = rewrite_ops cell_map s.final_ops;
+          accept =
+            Option.map
+              (fun (i, ops) -> (i, rewrite_ops cell_map ops))
+              s.accept;
         })
   in
   { dfa; init_tags = rewrite_ops cell_map init_tags; num_tags }
@@ -898,7 +905,7 @@ let dfa_to_dot dfa =
     | Copy { dst; src } -> "t" ^ string_of_int dst ^ "<-t" ^ string_of_int src
   in
   Array.iteri
-    (fun i { trans; finals; final_ops } ->
+    (fun i { trans; finals; accept } ->
       let accepted =
         let acc = ref [] in
         for r = Array.length finals - 1 downto 0 do
@@ -909,6 +916,9 @@ let dfa_to_dot dfa =
       (match accepted with
         | [] -> bprintf buf "  state%d [label=\"%d\"];\n" i i
         | rules ->
+            let final_ops =
+              match accept with Some (_, ops) -> ops | None -> []
+            in
             let ops =
               if final_ops = [] then ""
               else

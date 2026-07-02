@@ -215,16 +215,6 @@ let partition (name, p) =
 
 (* Code generation for the automata *)
 
-(* [best_final finals] returns the lowest-numbered accepting rule for this
-   state, or [None] if the state is not accepting. Lowest-numbered = highest
-   priority, matching the first-match semantics of [match%sedlex]. *)
-let best_final final =
-  let fin = ref None in
-  for i = Array.length final - 1 downto 0 do
-    if final.(i) then fin := Some i
-  done;
-  !fin
-
 let state_fun state = Printf.sprintf "__sedlex_state_%i" state
 
 (* [gen_tag_ops lexbuf ops cont] wraps [cont] in the code performing the tag
@@ -235,13 +225,7 @@ let state_fun state = Printf.sprintf "__sedlex_state_%i" state
    [__private__copy_mem] calls in list order. *)
 let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
   let loc = default_loc in
-  let dests =
-    List.map
-      (fun (op : Sedlex.tag_op) ->
-        match op with
-          | Copy { dst; _ } | Set_position { dst } | Set_value { dst; _ } -> dst)
-      ops
-  in
+  let dests = List.map Sedlex.op_dest ops in
   let clobbered =
     List.sort_uniq compare
       (List.filter_map
@@ -291,18 +275,18 @@ let gen_tag_ops lexbuf (ops : Sedlex.tag_op list) cont =
    executes the state's final tag operations and returns the accepting rule
    index directly; otherwise it emits a call to the state function. *)
 let call_state lexbuf (auto : Sedlex.dfa) state =
-  let { Sedlex.trans; finals; final_ops } = auto.(state) in
+  let { Sedlex.trans; accept; _ } = auto.(state) in
   if Array.length trans = 0 then (
-    match best_final finals with
-      | Some i -> gen_tag_ops lexbuf final_ops (eint ~loc:default_loc i)
+    match accept with
+      | Some (i, ops) -> gen_tag_ops lexbuf ops (eint ~loc:default_loc i)
       | None -> assert false)
   else appfun (state_fun state) [lexbuf]
 
-(* [gen_state (lexbuf_name, lexbuf) auto i {trans; finals; final_ops}]
+(* [gen_state ~tagged (lexbuf_name, lexbuf) auto i {trans; accept; _}]
    generates the function [__sedlex_state_N] for DFA state [i]. The function:
-   1. If the state is accepting, executes [final_ops] (materializing tag
-      registers into their canonical cells) then calls [mark] to save the
-      current position and a snapshot of the memory cells.
+   1. If the state is accepting ([accept = Some (rule, final_ops)]), executes
+      [final_ops] (materializing tag registers into their canonical cells) then
+      calls [mark] to save the current position and a snapshot of memory.
    2. Reads the next code point, maps it through the partition function to
       get an equivalence class index, then pattern-matches on that index.
    3. Each transition arm executes its tag operations then calls the target
@@ -310,7 +294,7 @@ let call_state lexbuf (auto : Sedlex.dfa) state =
    4. The default arm calls [backtrack] to return the last accepted rule.
    Returns [] for accepting states with no outgoing transitions (sinks). *)
 let gen_state ~tagged (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
-    { Sedlex.trans; finals; final_ops } =
+    { Sedlex.trans; accept; _ } =
   let loc = default_loc in
   (* Blocks with [as] bindings snapshot/restore the mem cells in mark/backtrack;
      tagless blocks skip that with the [_no_mem] variants (see sedlexing.mli). *)
@@ -345,12 +329,12 @@ let gen_state ~tagged (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
         ~expr:(Exp.fun_ ~loc Nolabel None lhs body);
     ]
   in
-  match best_final finals with
+  match accept with
     | None -> ret (body ())
     | Some _ when Array.length trans = 0 -> []
-    | Some i ->
+    | Some (i, ops) ->
         ret
-          (gen_tag_ops lexbuf final_ops
+          (gen_tag_ops lexbuf ops
              [%expr
                [%e mark i];
                [%e body ()]])

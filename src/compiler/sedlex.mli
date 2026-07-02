@@ -70,6 +70,9 @@ type tag_op =
           Emitted when determinization must preserve a position that a parallel
           NFA path is about to overwrite. *)
 
+(** [op_dest op] is the memory cell written by [op]. *)
+val op_dest : tag_op -> int
+
 (** [bind r] wraps [r] with start/end tag epsilon nodes. Returns
     [(wrapped_regexp, start_tag, end_tag)] where [start_tag] and [end_tag] are
     the allocated memory cell indices. *)
@@ -104,12 +107,17 @@ type dfa_state = {
           of the same list executed, and no two operations write the same cell.
       *)
   finals : bool array;
-      (** [finals.(i)] is [true] if this state is accepting for rule [i]. *)
-  final_ops : tag_op list;
-      (** Operations materializing the accepting path's registers into the
-          canonical cells (cell index = logical tag id) read by the binding
-          extraction code. Executed when entering the state, just before
-          [Sedlexing.mark]. Empty for non-accepting states. *)
+      (** [finals.(i)] is [true] if this state is accepting for rule [i]. Kept
+          for {!dfa_to_dot} (which displays every accepting rule); code driving
+          the automaton should use [accept], which resolves rule priority. *)
+  accept : (int * tag_op list) option;
+      (** For an accepting state, [Some (rule, final_ops)]: [rule] is the
+          lowest-numbered — hence highest-priority — accepting rule, matching
+          the first-match semantics of [match%sedlex], and [final_ops]
+          materializes that path's registers into the canonical cells (cell
+          index = logical tag id) read by the binding extraction code, executed
+          when entering the state just before [Sedlexing.mark]. [None] for
+          non-accepting states. *)
 }
 
 (** DFA states, indexed by state number. State 0 is the initial state. *)

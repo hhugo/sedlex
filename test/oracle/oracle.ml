@@ -168,13 +168,6 @@ let ref_match (rules : Ir.t array) (input : int array) : match_result option =
      [Set_position] records the position just past that code point;
    - on a dead end, the last saved snapshot wins ([Sedlexing.backtrack]). *)
 
-let best_final finals =
-  let n = Array.length finals in
-  let rec aux i =
-    if i = n then None else if finals.(i) then Some i else aux (i + 1)
-  in
-  aux 0
-
 let eval_pos mem ~len (pe : Sedlex.pos_expr) =
   match pe with
     | Sedlex.Tag { tag; offset } ->
@@ -251,10 +244,10 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
      self-loop. *)
   let rec loop state pos eofed =
     let st = compiled.dfa.(state) in
-    (match best_final st.finals with
-      | Some r ->
+    (match st.accept with
+      | Some (r, ops) ->
           (* Materialize registers into canonical cells, then mark. *)
-          apply pos st.final_ops;
+          apply pos ops;
           marked := Some (r, pos, Array.copy mem)
       | None -> ());
     if pos < len then (
