@@ -1346,6 +1346,26 @@ let%expect_test "opt_greedy" =
     | _ -> assert false);
   [%expect {| rep x="" |}]
 
+let%expect_test "rep_1_1_char_ops" =
+  (* Rep (_, 1 .. 1) is a single-character regexp, so Compl/Sub/Intersect
+     accept it: it normalizes to the bare Chars node, as repeat r (1, 1) did
+     on master. *)
+  let buf = Sedlexing.Utf8.from_string "b" in
+  (match%sedlex buf with
+    | Compl (Rep ('a', 1 .. 1)) -> print_string "compl-ok\n"
+    | _ -> assert false);
+  [%expect {| compl-ok |}];
+  let buf = Sedlexing.Utf8.from_string "b" in
+  (match%sedlex buf with
+    | Sub (any, Rep ('a', 1 .. 1)) -> print_string "sub-ok\n"
+    | _ -> assert false);
+  [%expect {| sub-ok |}];
+  let buf = Sedlexing.Utf8.from_string "a" in
+  (match%sedlex buf with
+    | Intersect ('a' .. 'c', Rep ('a', 1 .. 1)) -> print_string "inter-ok\n"
+    | _ -> assert false);
+  [%expect {| inter-ok |}]
+
 let num_mem buf = Sedlexing.__private__num_mem_cells buf
 
 let%expect_test "as_bindings_num_mem_cells" =
