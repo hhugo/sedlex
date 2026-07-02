@@ -226,6 +226,22 @@ let%expect_test "control: capture before a real char (no eof)" =
   oracle [| capture "x" (lit 'a') ^. lit 'b' |] "ab";
   [%expect {| "ab" -> rule 0, len 2, [x="a"] |}]
 
+let%expect_test "eof/rule-priority tie" =
+  (* An earlier rule and a later eof-terminated rule match the same length; the
+     earlier rule must win despite eof's zero-width mark landing later. *)
+  let a = [| plus (alt (lit 'b') (lit 'c')); seq (star (cls 'a' 'c')) eof |] in
+  oracle a "cc";
+  oracle a "c";
+  (* mirror: the eof-terminated rule is now first, so it wins the tie *)
+  let b = [| seq (star (cls 'a' 'c')) eof; plus (alt (lit 'b') (lit 'c')) |] in
+  oracle b "cc";
+  [%expect
+    {|
+    "cc" -> rule 0, len 2
+    "c" -> rule 0, len 1
+    "cc" -> rule 0, len 2
+    |}]
+
 (* ================================================================== *)
 (* Random sweeps (deterministic seed)                                  *)
 (* ================================================================== *)
@@ -238,5 +254,5 @@ let%expect_test "qcheck: two rules" =
   qcheck ~count:1000
     (G.map3
        (fun a b s -> ([| a; b |], s))
-       (gen_ir ()) (gen_ir ()) gen_input);
+       (gen_ir ~eof:true ()) (gen_ir ~eof:true ()) gen_input);
   [%expect {| |}]

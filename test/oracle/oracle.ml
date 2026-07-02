@@ -166,7 +166,9 @@ let ref_match (rules : Ir.t array) (input : int array) : match_result option =
      memory cells are saved ([Sedlexing.mark]);
    - a transition's tag operations run after the code point is consumed, so
      [Set_position] records the position just past that code point;
-   - on a dead end, the last saved snapshot wins ([Sedlexing.backtrack]). *)
+   - a mark is kept only when it improves on the current one — strictly longer,
+     or equal length with a lower rule number ([Sedlexing.mark]);
+   - on a dead end, the last kept snapshot wins ([Sedlexing.backtrack]). *)
 
 let eval_pos mem ~len (pe : Sedlex.pos_expr) =
   match pe with
@@ -246,9 +248,16 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
     let st = compiled.dfa.(state) in
     (match st.accept with
       | Some (r, ops) ->
-          (* Materialize registers into canonical cells, then mark. *)
+          (* Materialize registers into canonical cells (final_ops always run),
+             then keep the mark only if it improves on the current one — longer,
+             or equal length with a lower rule number. *)
           apply pos ops;
-          marked := Some (r, pos, Array.copy mem)
+          let improves =
+            match !marked with
+              | None -> true
+              | Some (mr, mp, _) -> pos > mp || (pos = mp && r < mr)
+          in
+          if improves then marked := Some (r, pos, Array.copy mem)
       | None -> ());
     if pos < len then (
       match transition st input.(pos) with
@@ -419,10 +428,10 @@ let gen_or_rule =
   let branch = G.bind (G.int_range 0 2) gen_simple in
   G.map2 (fun a b -> alt (capture "x" a) (capture "x" b)) branch branch
 
-(* Single-rule sweeps exercise the terminal [eof] anchor (regression coverage
-   for the fixed_length eof-width bug); multi-rule sweeps omit it to avoid the
-   separate eof/rule-priority interaction (a zero-width eof mark can re-mark at
-   the same position and flip which same-length rule wins). *)
+(* The terminal [eof] anchor gives regression coverage for both the
+   fixed_length eof-width bug and the eof/rule-priority tie (an earlier rule and
+   a later [eof]-terminated rule matching the same length: the earlier rule must
+   win). *)
 let gen_ir ?eof () = G.oneof_weighted [(4, gen_rule ?eof ()); (1, gen_or_rule)]
 let gen_input = G.string_size ~gen:gen_char (G.int_range 0 5)
 

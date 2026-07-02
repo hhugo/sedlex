@@ -307,10 +307,28 @@ let gen_state ~tagged (lexbuf_name, lexbuf) (auto : Sedlex.dfa) i
     else [%expr Sedlexing.__private__mark_no_mem [%e lexbuf] [%e eint ~loc i]]
   in
   let partition = Array.map (fun (cs, _, _) -> cs) trans in
+  (* Destination for a transition arm. [call_state] inlines an accepting sink
+     as a direct rule return, which is sound only when the arm advances [pos]
+     (a real character): a longer match always wins. But an arm whose set
+     contains [eof] (-1) may be taken without advancing [pos], so a direct
+     return would bypass longest-match/priority arbitration. For those, route
+     through [mark] (guarded) + [backtrack] so an equal-length, higher-priority
+     match already marked still wins. *)
+  let dest cs j =
+    let target = auto.(j) in
+    match target.Sedlex.accept with
+      | Some (r, final_ops)
+        when Cset.mem (-1) cs && Array.length target.Sedlex.trans = 0 ->
+          gen_tag_ops lexbuf final_ops
+            [%expr
+              [%e mark r];
+              [%e backtrack]]
+      | _ -> call_state lexbuf auto j
+  in
   let cases =
     Array.mapi
-      (fun i (_, j, tags) ->
-        let rhs = gen_tag_ops lexbuf tags (call_state lexbuf auto j) in
+      (fun i (cs, j, tags) ->
+        let rhs = gen_tag_ops lexbuf tags (dest cs j) in
         case ~lhs:(pint ~loc i) ~guard:None ~rhs)
       trans
   in

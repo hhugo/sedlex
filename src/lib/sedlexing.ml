@@ -276,11 +276,23 @@ let restore_mem lexbuf =
   if n > 0 then
     Array.blit lexbuf.__private__mem_saved 0 lexbuf.__private__mem 0 n
 
+(* An accepting state should record its match only when it beats the one
+   already marked: a strictly longer match always wins, and among matches of
+   equal length the lowest-numbered (highest-priority) rule wins — the
+   first-match semantics of [match%sedlex]. Without this, a zero-width [eof]
+   transition (which reaches a new accepting state without advancing [pos])
+   would overwrite an equal-length, higher-priority match marked just before.
+   [marked_val < 0] is the "no match yet" sentinel set by [start]. *)
+let[@inline] mark_improves lexbuf i =
+  lexbuf.marked_val < 0 || lexbuf.pos > lexbuf.marked_pos || i < lexbuf.marked_val
+
 (* Public API (also usable by hand-written lexers): mark/start/backtrack carry
    the mem snapshot along with the position bookkeeping. *)
 let mark lexbuf i =
-  mark_pos lexbuf i;
-  snapshot_mem lexbuf
+  if mark_improves lexbuf i then begin
+    mark_pos lexbuf i;
+    snapshot_mem lexbuf
+  end
 
 let start lexbuf =
   start_pos lexbuf;
@@ -298,7 +310,10 @@ let backtrack lexbuf =
    path never blits cells left over from an earlier tagged block on the same
    lexbuf. Tagged blocks keep using [mark]/[backtrack] to snapshot/restore. *)
 let __private__start = start_pos
-let __private__mark_no_mem = mark_pos
+
+let __private__mark_no_mem lexbuf i =
+  if mark_improves lexbuf i then mark_pos lexbuf i
+
 let __private__backtrack_no_mem = backtrack_pos
 
 let rollback lexbuf =

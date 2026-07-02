@@ -212,10 +212,14 @@ val start : lexbuf -> unit
     is incremented. *)
 val next : lexbuf -> Uchar.t option
 
-(** [mark lexbuf i] stores the integer [i] in the internal slot. The backtrack
-    position is set to the current position. If the lexbuf has tagged DFA memory
-    cells (from [as] bindings), the current cell values are snapshotted so they
-    can be restored by [backtrack]. *)
+(** [mark lexbuf i] records rule [i] and the current position as the current
+    match, but only if it improves on the match already marked since [start]: a
+    strictly longer match always wins, and among equal-length matches the
+    lowest-numbered [i] wins (the first-match semantics of [match%sedlex]). This
+    keeps a zero-width [eof] transition from overriding an equal-length,
+    higher-priority match. When it does record, the backtrack position is set to
+    the current position, and if the lexbuf has tagged DFA memory cells (from
+    [as] bindings) their values are snapshotted for [backtrack] to restore. *)
 val mark : lexbuf -> int -> unit
 
 (** [backtrack lexbuf] returns the value stored in the internal slot of the

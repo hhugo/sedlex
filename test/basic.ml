@@ -1381,6 +1381,37 @@ let%expect_test "empty_pattern" =
     empty
     |}]
 
+let%expect_test "eof_rule_priority" =
+  (* An earlier rule and a later eof-terminated rule match the same lexeme
+     length; declaration order must break the tie, even though eof's zero-width
+     accept is reached last. Exercises the generated runtime, not just the DFA
+     interpreter. *)
+  let lex buf =
+    match%sedlex buf with
+    | Plus ('b' | 'c') -> "rule0"
+    | (Star ('a' .. 'c')), eof -> "rule1"
+    | _ -> "none"
+  in
+  let lex_eof_first buf =
+    match%sedlex buf with
+    | (Star ('a' .. 'c')), eof -> "rule0"
+    | Plus ('b' | 'c') -> "rule1"
+    | _ -> "none"
+  in
+  List.iter
+    (fun s ->
+      Printf.printf "%-4S -> %-5s | %s\n" s
+        (lex (Sedlexing.Utf8.from_string s))
+        (lex_eof_first (Sedlexing.Utf8.from_string s)))
+    [ "cc"; "c"; ""; "a" ];
+  [%expect
+    {|
+    "cc" -> rule0 | rule0
+    "c"  -> rule0 | rule0
+    ""   -> rule1 | rule0
+    "a"  -> rule1 | rule0
+    |}]
+
 let num_mem buf = Sedlexing.__private__num_mem_cells buf
 
 let%expect_test "as_bindings_num_mem_cells" =
