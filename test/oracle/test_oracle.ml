@@ -195,14 +195,48 @@ let%expect_test "BUG: multiple stars before single-char capture" =
   [%expect {| "bb" -> rule 0, len 2, [y="b"] |}]
 
 (* ================================================================== *)
+(* eof captures (regression for the fixed_length eof-width bug)         *)
+(* ================================================================== *)
+
+let%expect_test "capture spanning eof" =
+  (* eof is zero-width: the End_minus offset must not retreat across it, so
+     the capture keeps the whole preceding lexeme. *)
+  oracle [| capture "x" (star any) ^. eof |] "abc";
+  oracle [| capture "x" (lit 'a') ^. eof |] "a";
+  oracle [| star any ^. capture "x" (opt (lit 'a')) ^. eof |] "b";
+  [%expect
+    {|
+    "abc" -> rule 0, len 3, [x="abc"]
+    "a" -> rule 0, len 1, [x="a"]
+    "b" -> rule 0, len 1, [x=""]
+    |}]
+
+let%expect_test "capture before char-or-eof alternation" =
+  (* '(a | eof)' is one cset of data-dependent width, so the capture before
+     it must be tag-based, not offset-based. *)
+  oracle [| capture "x" (lit 'x') ^. alt (lit 'a') eof |] "x";
+  oracle [| capture "x" (lit 'x') ^. alt (lit 'a') eof |] "xa";
+  [%expect
+    {|
+    "x" -> rule 0, len 1, [x="x"]
+    "xa" -> rule 0, len 2, [x="x"]
+    |}]
+
+let%expect_test "control: capture before a real char (no eof)" =
+  oracle [| capture "x" (lit 'a') ^. lit 'b' |] "ab";
+  [%expect {| "ab" -> rule 0, len 2, [x="a"] |}]
+
+(* ================================================================== *)
 (* Random sweeps (deterministic seed)                                  *)
 (* ================================================================== *)
 
 let%expect_test "qcheck: single rule" =
-  qcheck (G.map2 (fun r s -> ([| r |], s)) gen_ir gen_input);
+  qcheck (G.map2 (fun r s -> ([| r |], s)) (gen_ir ~eof:true ()) gen_input);
   [%expect {| |}]
 
 let%expect_test "qcheck: two rules" =
   qcheck ~count:1000
-    (G.map3 (fun a b s -> ([| a; b |], s)) gen_ir gen_ir gen_input);
+    (G.map3
+       (fun a b s -> ([| a; b |], s))
+       (gen_ir ()) (gen_ir ()) gen_input);
   [%expect {| |}]

@@ -31,6 +31,8 @@ open Sedlex_compiler
 let ok = function Ok x -> x | Error e -> failwith e
 let lit c = Ir.chars (Cset.singleton (Char.code c))
 let cls lo hi = Ir.chars (Cset.interval (Char.code lo) (Char.code hi))
+let eof = Ir.chars Cset.eof
+let any = Ir.chars Cset.any
 let seq r1 r2 = ok (Ir.seq r1 r2)
 let ( ^. ) = seq
 let alt r1 r2 = ok (Ir.alt r1 r2)
@@ -75,8 +77,18 @@ let parses (ir : Ir.t) (input : int array) :
   let rec go ir pos env =
     match ir with
       | Ir.Chars cs ->
-          if pos < len && Cset.mem input.(pos) cs then Seq.return (pos + 1, env)
-          else Seq.empty
+          (* A real character consumes one position; the eof pseudo-character
+             (-1) matches only at end of input and consumes nothing, mirroring
+             the runtime where [next] reports EOF without advancing [pos]. *)
+          let real =
+            if pos < len && Cset.mem input.(pos) cs then Seq.return (pos + 1, env)
+            else Seq.empty
+          in
+          let eof =
+            if pos = len && Cset.mem (-1) cs then Seq.return (pos, env)
+            else Seq.empty
+          in
+          Seq.append real eof
       | Ir.Eps -> Seq.return (pos, env)
       | Ir.Seq elems ->
           List.fold_left
@@ -225,7 +237,19 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
   in
   apply 0 compiled.init_tags;
   let marked = ref None in
-  let rec loop state pos =
+  let transition (st : Sedlex.dfa_state) ch =
+    Array.fold_left
+      (fun acc (cs, tgt, ops) ->
+        match acc with
+          | Some _ -> acc
+          | None -> if Cset.mem ch cs then Some (tgt, ops) else None)
+      None st.trans
+  in
+  (* [eofed] records whether the EOF pseudo-character has already been fed.
+     The runtime reports EOF (-1) without advancing [pos], so the eof edge is
+     zero-width; the flag stops us from re-feeding it forever on an eof
+     self-loop. *)
+  let rec loop state pos eofed =
     let st = compiled.dfa.(state) in
     (match best_final st.finals with
       | Some r ->
@@ -233,24 +257,21 @@ let dfa_match (compiled : Sedlex.compiled_ir) (input : int array) :
           apply pos st.final_ops;
           marked := Some (r, pos, Array.copy mem)
       | None -> ());
-    if pos <= len then (
-      (* At end of input the runtime feeds the EOF code point (-1). *)
-      let ch = if pos < len then input.(pos) else -1 in
-      let tr =
-        Array.fold_left
-          (fun acc (cs, tgt, ops) ->
-            match acc with
-              | Some _ -> acc
-              | None -> if Cset.mem ch cs then Some (tgt, ops) else None)
-          None st.trans
-      in
-      match tr with
+    if pos < len then (
+      match transition st input.(pos) with
         | None -> ()
         | Some (tgt, ops) ->
             apply (pos + 1) ops;
-            loop tgt (pos + 1))
+            loop tgt (pos + 1) eofed)
+    else if not eofed then (
+      (* End of input: feed EOF (-1) as a zero-width step. *)
+      match transition st (-1) with
+        | None -> ()
+        | Some (tgt, ops) ->
+            apply pos ops;
+            loop tgt pos true)
   in
-  loop 0 0;
+  loop 0 0 false;
   Option.map
     (fun (r, p, m) ->
       {
@@ -336,6 +357,22 @@ let gen_cset =
         gen_char gen_char;
     ]
 
+(* A terminal end-of-input anchor: nothing, a bare [eof], or a data-dependent
+   [c | eof] cset. Placed only at the end of a rule, where [eof] realistically
+   appears; this exercises the zero-width eof paths (offset math across eof,
+   mixed-width csets) without generating degenerate eof-in-the-middle shapes. *)
+let gen_eof_anchor =
+  G.oneof_weighted
+    [
+      (3, G.pure None);
+      (1, G.pure (Some (Ir.chars Cset.eof)));
+      ( 1,
+        G.map
+          (fun c ->
+            Some (Ir.chars (Cset.union (Cset.singleton (Char.code c)) Cset.eof)))
+          gen_char );
+    ]
+
 (* Capture-free regexp of bounded depth. *)
 let rec gen_simple depth =
   if depth = 0 then G.map Ir.chars gen_cset
@@ -361,7 +398,7 @@ let names = [| "x"; "y"; "z"; "w" |]
 (* A rule: a sequence of up to 4 elements with at least one capture. Captures
    sit at the top level of the sequence (the Ir smart constructors reject them
    under repetition), each binding a distinct name. *)
-let gen_rule =
+let gen_rule ?(eof = false) () =
   G.bind (G.int_range 1 4) (fun n ->
       G.bind
         (G.int_range 0 (n - 1))
@@ -376,14 +413,24 @@ let gen_rule =
           let rec build i acc =
             if i = n then acc else build (i + 1) (G.map2 seq acc (gen_elem i))
           in
-          build 1 (gen_elem 0)))
+          let body = build 1 (gen_elem 0) in
+          if not eof then body
+          else
+            G.map2
+              (fun body anchor ->
+                match anchor with Some a -> seq body a | None -> body)
+              body gen_eof_anchor))
 
 (* An or-pattern rule: both branches bind the same name (discriminators). *)
 let gen_or_rule =
   let branch = G.bind (G.int_range 0 2) gen_simple in
   G.map2 (fun a b -> alt (capture "x" a) (capture "x" b)) branch branch
 
-let gen_ir = G.oneof_weighted [(4, gen_rule); (1, gen_or_rule)]
+(* Single-rule sweeps exercise the terminal [eof] anchor (regression coverage
+   for the fixed_length eof-width bug); multi-rule sweeps omit it to avoid the
+   separate eof/rule-priority interaction (a zero-width eof mark can re-mark at
+   the same position and flip which same-length rule wins). *)
+let gen_ir ?eof () = G.oneof_weighted [(4, gen_rule ?eof ()); (1, gen_or_rule)]
 let gen_input = G.string_size ~gen:gen_char (G.int_range 0 5)
 
 (* Deterministic property runner: fixed seed, no shrinking. Failing cases are
