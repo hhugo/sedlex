@@ -1329,6 +1329,23 @@ let%expect_test "as_bindings" =
     | _ -> assert false);
   [%expect {| x=a y=ba |}]
 
+let%expect_test "opt_greedy" =
+  (* Opt is greedy (consume-first), so it agrees with Rep (_, 0 .. 1): when the
+     empty parse and the consuming parse have the same total length, both let
+     the leading optional take the character, leaving the trailing Star empty. *)
+  let buf = Sedlexing.Utf8.from_string "a" in
+  (match%sedlex buf with
+    | Opt 'a', (Star 'a' as x) ->
+        Printf.printf "opt x=%S\n" (Sedlexing.Utf8.of_submatch x)
+    | _ -> assert false);
+  [%expect {| opt x="" |}];
+  let buf = Sedlexing.Utf8.from_string "a" in
+  (match%sedlex buf with
+    | Rep ('a', 0 .. 1), (Star 'a' as x) ->
+        Printf.printf "rep x=%S\n" (Sedlexing.Utf8.of_submatch x)
+    | _ -> assert false);
+  [%expect {| rep x="" |}]
+
 let num_mem buf = Sedlexing.__private__num_mem_cells buf
 
 let%expect_test "as_bindings_num_mem_cells" =
