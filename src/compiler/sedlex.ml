@@ -289,6 +289,13 @@ type 'a config = { node : node; tags : 'a TagMap.t }
 type candidate = addr config
 type stored = cell config
 
+(* [is_relevant node] tells whether a configuration on [node] matters to
+   a DFA state: nodes with outgoing character transitions do, and so do
+   rule-final nodes (no transitions, no epsilon successors). Epsilon-only
+   nodes contribute nothing once visited; keeping them would bloat state
+   keys. *)
+let is_relevant (node : node) : bool = node.trans <> [] || node.eps = []
+
 (* [eps_closure seeds] computes the priority-ordered epsilon closure of
    [seeds]. Nodes are visited depth-first following the order of [eps]
    lists, and the first (highest-priority) path to reach a node fixes that
@@ -309,7 +316,7 @@ let eps_closure (seeds : candidate list) : candidate list =
               TagMap.add dst (Pending (Value value)) tags
           | Some (Copy _) -> assert false (* never carried by NFA nodes *)
       in
-      acc := { node; tags } :: !acc;
+      if is_relevant node then acc := { node; tags } :: !acc;
       List.iter (fun n -> visit n tags) node.eps)
   in
   List.iter (fun c -> visit c.node c.tags) seeds;
