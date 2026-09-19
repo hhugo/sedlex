@@ -73,6 +73,13 @@
       as working registers, so the final copies cannot clobber the value
       of a path that is still live when matching continues.
 
+      A final rename pass collapses the registers of conflict-free tags,
+      tags that never hold two distinct registers in one state, into
+      their canonical cell, dropping the no-op copies this creates. Only
+      genuinely conflicted tags (e.g. a capture start reachable from a
+      preceding loop's closure, or a discriminator written by two branches
+      that stay alive together) pay for extra working registers.
+
    Possible future optimizations (see #175)
    -----------------------------------------
 
@@ -293,7 +300,8 @@ type stored = cell config
    a DFA state: nodes with outgoing character transitions do, and so do
    rule-final nodes (no transitions, no epsilon successors). Epsilon-only
    nodes contribute nothing once visited; keeping them would bloat state
-   keys. *)
+   keys and flag spurious tag conflicts (e.g. the losing branch's
+   discriminator node). *)
 let is_relevant (node : node) : bool = node.trans <> [] || node.eps = []
 
 (* [eps_closure seeds] computes the priority-ordered epsilon closure of
@@ -375,18 +383,39 @@ module Registers : sig
      to a canonical cell. *)
   val is_working : t -> cell -> bool
 
-  (* [count t] is the total number of cells, canonical and working. *)
-  val count : t -> int
+  (* [note_conflicts t candidate] records every tag for which [candidate]
+     holds two distinct registers, i.e. two simultaneously-live NFA paths
+     recorded different values. Checking candidates is enough: a stored
+     state has the same key, hence the same sharing structure. *)
+  val note_conflicts : t -> candidate list -> unit
+
+  (* [collapse_conflict_free t] is the rename pass, run once all states
+     are built. A conflict-free tag only ever needs one register at a
+     time, so its whole pool collapses into its canonical cell: writes then
+     go there directly, and the realignment and materialization copies
+     become no-op Copy (t, t), dropped by [rename_ops]. Registers are
+     never shared between tags, so the rename cannot collide with another
+     tag's cells. The surviving working registers (conflicted tags) are
+     compacted just above the canonical cells. Returns the cell renaming
+     and the total cell count after it. *)
+  val collapse_conflict_free : t -> cell array * int
 end = struct
   type t = {
     num_logical : int;
     mutable next_cell : int;
     pools : (tag, cell list) Hashtbl.t;
         (* Per-tag pool of the working registers allocated so far. *)
+    conflicted : (tag, unit) Hashtbl.t;
+        (* Tags seen holding two distinct registers in one DFA state. *)
   }
 
   let create ~num_logical =
-    { num_logical; next_cell = num_logical; pools = Hashtbl.create 8 }
+    {
+      num_logical;
+      next_cell = num_logical;
+      pools = Hashtbl.create 8;
+      conflicted = Hashtbl.create 8;
+    }
 
   let alloc t ~tag ~avoid =
     let pool =
@@ -401,7 +430,33 @@ end = struct
           c
 
   let is_working t c = c >= t.num_logical
-  let count t = t.next_cell
+
+  let note_conflicts t (candidate : candidate list) =
+    let seen = Hashtbl.create 8 in
+    List.iter
+      (fun c ->
+        TagMap.iter
+          (fun tag a ->
+            match Hashtbl.find_opt seen tag with
+              | None -> Hashtbl.add seen tag a
+              | Some a' -> if a <> a' then Hashtbl.replace t.conflicted tag ())
+          c.tags)
+      candidate
+
+  let collapse_conflict_free t =
+    let cell_map = Array.init t.next_cell (fun c -> c) in
+    Hashtbl.iter
+      (fun tag pool ->
+        if not (Hashtbl.mem t.conflicted tag) then
+          List.iter (fun c -> cell_map.(c) <- tag) pool)
+      t.pools;
+    let compact = ref t.num_logical in
+    for c = t.num_logical to t.next_cell - 1 do
+      if cell_map.(c) = c then (
+        cell_map.(c) <- !compact;
+        incr compact)
+    done;
+    (cell_map, !compact)
 end
 
 (* The identity of a DFA state. States are looked up modulo bijective
@@ -584,6 +639,7 @@ let accept_of (ctx : ctx) (configs : stored list) : accept option =
    (ocamllex: [get_state]) *)
 let rec find_or_add_state (ctx : ctx) (candidate : candidate list) :
     int * tag_op list =
+  Registers.note_conflicts ctx.regs candidate;
   let key = State_key.of_candidate candidate in
   match State_key.Tbl.find_opt ctx.tbl.by_key key with
     | Some num ->
@@ -629,6 +685,40 @@ and transitions (ctx : ctx) (configs : stored list) :
       (cset, num, ops))
     pieces
 
+(* [rename_ops cell_map ops] applies the renaming to one operation list,
+   dropping the copies it makes trivial. *)
+let rename_ops (cell_map : cell array) (ops : tag_op list) : tag_op list =
+  let ops =
+    List.filter_map
+      (fun op ->
+        match op with
+          | Set_position { dst } -> Some (Set_position { dst = cell_map.(dst) })
+          | Set_value { dst; value } ->
+              Some (Set_value { dst = cell_map.(dst); value })
+          | Copy { dst; src } ->
+              let dst = cell_map.(dst) and src = cell_map.(src) in
+              if dst = src then None else Some (Copy { dst; src }))
+      ops
+  in
+  (* The renaming must preserve the parallel-move property: no two
+     operations of one list write the same cell (the generated code relies
+     on this when saving clobbered Copy sources). *)
+  let dsts = List.map op_dest ops in
+  assert (List.length (List.sort_uniq compare dsts) = List.length dsts);
+  ops
+
+(* [rename_state cell_map s] applies the renaming to every operation list
+   of a state. *)
+let rename_state (cell_map : cell array) (s : dfa_state) : dfa_state =
+  {
+    trans =
+      Array.map (fun (c, t, ops) -> (c, t, rename_ops cell_map ops)) s.trans;
+    accept =
+      Option.map
+        (fun a -> { a with final_ops = rename_ops cell_map a.final_ops })
+        s.accept;
+  }
+
 (* [compile rs] determinizes the NFA for an array of regexp rules. See the
    implementation overview at the top of this file. *)
 let compile (rs : regexp array) : compiled =
@@ -647,11 +737,12 @@ let compile (rs : regexp array) : compiled =
   in
   let num0, init_tags = find_or_add_state ctx (eps_closure seeds) in
   assert (num0 = 0);
-  {
-    dfa = Array.init ctx.tbl.n_states (Hashtbl.find ctx.tbl.defs);
-    init_tags;
-    num_tags = Registers.count ctx.regs;
-  }
+  let cell_map, num_tags = Registers.collapse_conflict_free ctx.regs in
+  let dfa =
+    Array.init ctx.tbl.n_states (fun i ->
+        rename_state cell_map (Hashtbl.find ctx.tbl.defs i))
+  in
+  { dfa; init_tags = rename_ops cell_map init_tags; num_tags }
 
 (* High-level compilation from IR.
 
